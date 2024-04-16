@@ -4,7 +4,7 @@
 
 </br>
 
-- <b>Creating a Home Lab in Oracle VirtualBox</b>
-- <b>Creating Ethical Hacking Tools Using Python</b>
+- <b><a href="https://github.com/mglcyberprojects/Creating-a-Home-Lab-in-Oracle-VirtualBox">Creating a Home Lab in Oracle VirtualBox</a></b>
+- <b><a href="https://github.com/mglcyberprojects/Creating-Ethical-Hacking-Tools-Using-Python">Creating Ethical Hacking Tools Using Python</a></b>
 - <b>Using Nessus to Identify Vulnerabilities</b>
 - <b>Building a Virtual HoneyPot</b>
