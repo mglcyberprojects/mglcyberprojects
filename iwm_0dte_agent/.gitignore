@@ -1,5 +1,6 @@
 .env
 trade_log.csv
+.robinhood_mcp_tokens.json
 __pycache__/
 *.pyc
 .pytest_cache/

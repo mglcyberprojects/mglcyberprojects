@@ -69,5 +69,23 @@ class Config:
         default_factory=lambda: _env_int("TELEGRAM_CONFIRM_TIMEOUT_SECONDS", 300)
     )
 
+    # Robinhood's official Agentic Trading MCP server. Used (when enabled)
+    # for account/equity data in --live mode via OAuth -- see mcp_broker.py.
+    # As of this writing, options order placement is not yet exposed on
+    # this server, so option chain lookups and order submission still go
+    # through the robin_stocks fallback regardless of this setting.
+    use_robinhood_mcp: bool = field(
+        default_factory=lambda: os.environ.get("USE_ROBINHOOD_MCP", "true").lower() == "true"
+    )
+    robinhood_mcp_url: str = field(
+        default_factory=lambda: os.environ.get("ROBINHOOD_MCP_URL", "https://agent.robinhood.com/mcp/trading")
+    )
+    robinhood_mcp_token_cache_path: str = field(
+        default_factory=lambda: os.environ.get("ROBINHOOD_MCP_TOKEN_CACHE_PATH", ".robinhood_mcp_tokens.json")
+    )
+    robinhood_mcp_oauth_port: int = field(
+        default_factory=lambda: _env_int("ROBINHOOD_MCP_OAUTH_PORT", 8765)
+    )
+
 
 CONFIG = Config()

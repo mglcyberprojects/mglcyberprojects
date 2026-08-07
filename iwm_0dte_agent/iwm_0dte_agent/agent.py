@@ -21,6 +21,7 @@ import time as time_module
 
 from .broker import Broker, RobinhoodBroker
 from .config import CONFIG, Config
+from .mcp_broker import MCPBroker
 from .models import OpenPosition, ProposedOrder
 from .notifier import Notifier, build_notifier
 from .paper_broker import PaperBroker
@@ -32,7 +33,24 @@ logger = logging.getLogger(__name__)
 
 
 def _build_broker(live: bool, config: Config) -> Broker:
-    return RobinhoodBroker(config) if live else PaperBroker(config)
+    if not live:
+        return PaperBroker(config)
+    return MCPBroker(config) if config.use_robinhood_mcp else RobinhoodBroker(config)
+
+
+def list_mcp_tools(config: Config = CONFIG) -> None:
+    """Connect to Robinhood's MCP server and print every discovered tool,
+    without touching robin_stocks or running the trading loop. Useful for
+    checking, e.g., whether options tools have shown up yet.
+    """
+    broker = MCPBroker(config)
+    try:
+        broker.connect()
+    finally:
+        broker.close()
+    print(f"\nDiscovered {len(broker.list_discovered_tools())} MCP tools at {config.robinhood_mcp_url}:")
+    for name in sorted(broker.list_discovered_tools()):
+        print(f"  - {name}")
 
 
 def _today_open(config: Config) -> dt.datetime:
@@ -260,12 +278,22 @@ def main() -> None:
     parser.add_argument("--live", action="store_true", help="Place real orders on Robinhood (default: paper trading)")
     parser.add_argument("--once", action="store_true", help="Run a single iteration and exit (useful for testing)")
     parser.add_argument("--verbose", action="store_true", help="Enable debug logging")
+    parser.add_argument(
+        "--list-mcp-tools", action="store_true",
+        help="Connect to Robinhood's MCP server, print the tools it currently exposes, and exit "
+             "(no robin_stocks login, no trading).",
+    )
     args = parser.parse_args()
 
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
+
+    if args.list_mcp_tools:
+        list_mcp_tools()
+        return
+
     run(live=args.live, once=args.once)
 
 

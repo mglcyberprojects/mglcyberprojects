@@ -12,11 +12,18 @@ the terminal or approved/declined from Telegram. There is no autopilot mode.
   within hours, and often expire worthless. This project is not investment
   advice, and past behavior of any strategy here is no guarantee of future
   results.
-- **Robinhood has no official public trading API.** `--live` mode talks to
-  Robinhood through [`robin_stocks`](https://github.com/jmfernandes/robin_stocks),
+- **Robinhood options trading still goes through an unofficial client.**
+  Robinhood launched an official, OAuth-based "Agentic Trading" MCP server
+  in May 2026 (`agent.robinhood.com/mcp/trading`), and `--live` mode uses it
+  by default for account balance and IWM's underlying price. But as of this
+  writing, that server does not yet expose options order placement — so
+  0DTE option chain lookups and every actual order this agent places still
+  go through [`robin_stocks`](https://github.com/jmfernandes/robin_stocks),
   an unofficial, reverse-engineered client. Using it to automate trading is
   against Robinhood's Terms of Service and can get an account flagged,
-  restricted, or closed. That risk is yours if you enable `--live`.
+  restricted, or closed. That risk is yours if you enable `--live`. See
+  "Robinhood's official MCP server" below for details and how to check
+  whether that's changed.
 - **Default mode is paper trading.** Running the agent with no flags never
   touches Robinhood or real money — it simulates fills against real IWM
   price data pulled via `yfinance`, with a synthetic (Black-Scholes) option
@@ -80,6 +87,54 @@ For `--live` mode only, also fill in `ROBINHOOD_USERNAME`,
 `ROBINHOOD_PASSWORD`, and `ROBINHOOD_TOTP_SECRET` (the base32 secret from
 setting up an authenticator app for 2FA — not SMS codes) in `.env`.
 
+## Robinhood's official MCP server
+
+`--live` mode defaults to `USE_ROBINHOOD_MCP=true`, which connects to
+Robinhood's official Agentic Trading MCP server for account balance and
+IWM's underlying price via OAuth — you authorize in your own browser, the
+agent never sees your Robinhood password for that part. **0DTE options
+(chain lookup and every order this agent actually places) still go through
+`robin_stocks` regardless of this setting**, because Robinhood's MCP server
+does not yet expose options tools. `ROBINHOOD_USERNAME` / `PASSWORD` /
+`TOTP_SECRET` are therefore still required in `.env` even with MCP enabled.
+Set `USE_ROBINHOOD_MCP=false` to skip MCP entirely and use `robin_stocks`
+for everything, the way this project worked before the MCP server existed.
+
+**Check what's live on your account** without running the trading loop or
+touching robin_stocks at all:
+
+```bash
+python -m iwm_0dte_agent --list-mcp-tools
+```
+
+This connects via OAuth (opens your browser to Robinhood's login) and
+prints every tool the server currently exposes. If you see anything with
+"option" in the name, the agent will also log a warning about it on
+`--live` startup — that's your sign options support may have landed, and
+worth asking to have wired into `mcp_broker.py`'s `MCPBroker` so order
+placement moves off `robin_stocks` too.
+
+**This integration has not been exercised against the live server.** It's
+written against the real `mcp` Python SDK's client API (verified by
+inspecting the installed package) and Robinhood's publicly documented OAuth
++ MCP setup, but the sandbox this was built in has no network access to
+`robinhood.com`, so the OAuth handshake and exact tool response shapes are
+unconfirmed. If `--list-mcp-tools` or `--live` fails during the MCP step:
+
+- The OAuth flow opens `http://127.0.0.1:8765/callback` (configurable via
+  `ROBINHOOD_MCP_OAUTH_PORT`) to catch the redirect — make sure nothing else
+  is bound to that port, and that you're running this on the same machine
+  as the browser (the MCP docs say agentic accounts are set up on desktop).
+- A tool-name or response-shape error will name the exact tool and payload
+  it choked on (`MCPError`) — that's the fastest way to tell me what
+  Robinhood's server actually returned so the parsing can be corrected.
+- As a fallback, set `USE_ROBINHOOD_MCP=false` and the agent behaves exactly
+  as it did before this integration existed.
+
+Tokens are cached in `.robinhood_mcp_tokens.json` (gitignored) after the
+first successful authorization, so you shouldn't need to reauthorize every
+run.
+
 ## Telegram alerts + approval (optional)
 
 If `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` are both set in `.env`, the
@@ -120,6 +175,9 @@ python -m iwm_0dte_agent --once --verbose
 
 # Live trading on Robinhood (real money, real orders, reads .env credentials):
 python -m iwm_0dte_agent --live
+
+# Check what Robinhood's official MCP server currently exposes, no trading:
+python -m iwm_0dte_agent --list-mcp-tools
 ```
 
 All proposed and executed trades are appended to `trade_log.csv`
@@ -139,17 +197,18 @@ synthetic option pricer — all pure functions, no network or broker calls.
 
 ```
 iwm_0dte_agent/
-  config.py         # env-driven configuration
-  models.py          # shared dataclasses (Bar, OptionContract, TradeSignal, ...)
-  broker.py           # Broker interface + live Robinhood implementation (robin_stocks)
-  paper_broker.py     # simulated broker for --dry-run (default)
-  pricing.py           # Black-Scholes pricer used only by the paper broker
-  strategy.py          # ORB + VWAP signal generation (pure functions)
+  config.py             # env-driven configuration
+  models.py             # shared dataclasses (Bar, OptionContract, TradeSignal, ...)
+  broker.py             # Broker interface + live Robinhood implementation (robin_stocks)
+  mcp_broker.py         # Robinhood's official MCP server for account/equity data, robin_stocks fallback for options
+  paper_broker.py       # simulated broker for --dry-run (default)
+  pricing.py            # Black-Scholes pricer used only by the paper broker
+  strategy.py           # ORB + VWAP signal generation (pure functions)
   risk.py               # position sizing and daily risk limits
-  notifier.py            # Notifier protocol + factory (Telegram if configured, else terminal)
-  telegram_bot.py         # Telegram alerts + inline-button approve/decline
-  terminal_notifier.py    # terminal fallback: print alerts, y/N confirmation prompt
-  trade_log.py             # CSV audit log of every proposed/filled/declined trade
-  agent.py                  # main loop + CLI entrypoint
-tests/                      # unit tests for strategy/risk/pricing/notifier
+  notifier.py           # Notifier protocol + factory (Telegram if configured, else terminal)
+  telegram_bot.py       # Telegram alerts + inline-button approve/decline
+  terminal_notifier.py  # terminal fallback: print alerts, y/N confirmation prompt
+  trade_log.py          # CSV audit log of every proposed/filled/declined trade
+  agent.py              # main loop + CLI entrypoint
+tests/                  # unit tests for strategy/risk/pricing/notifier/mcp_broker
 ```
