@@ -3,8 +3,8 @@
 A signal-generation agent for **$IWM (Russell 2000 ETF) same-day-expiration
 ("0DTE") options**, connected to Robinhood. It watches price action, applies
 an opening-range-breakout strategy, and proposes trades — but it **never
-places an order without an explicit human confirmation typed at the
-terminal**. There is no autopilot mode.
+places an order without an explicit human confirmation**, either typed at
+the terminal or approved/declined from Telegram. There is no autopilot mode.
 
 ## Read this before running it
 
@@ -21,10 +21,19 @@ terminal**. There is no autopilot mode.
   touches Robinhood or real money — it simulates fills against real IWM
   price data pulled via `yfinance`, with a synthetic (Black-Scholes) option
   chain. Use this to evaluate the strategy before ever considering `--live`.
-- Every proposed trade — entry or exit — is printed to the terminal with its
-  contract, size, cost, stop loss, and profit target, and requires a typed
-  `y` to proceed. `--live` mode additionally requires typing `LIVE` at
-  startup before the session begins.
+- Every proposed trade — entry or exit — shows its contract, size, cost,
+  stop loss, and profit target, and requires an explicit approval before
+  `broker.submit_order` is ever called. With Telegram configured, that
+  approval is an inline button reply from your authorized chat; otherwise
+  it's a typed `y` at the terminal. `--live` mode additionally requires
+  typing `LIVE` at startup before the session begins.
+- **Telegram approval means whoever controls that Telegram account can
+  place real orders in --live mode.** Treat the bot token and your chat id
+  as credentials: keep `.env` out of git (already covered by `.gitignore`),
+  don't add the bot to group chats, and don't share the token. An unanswered
+  confirmation request is treated as a decline after
+  `TELEGRAM_CONFIRM_TIMEOUT_SECONDS` (default 5 minutes) — it never falls
+  through to "approved" on timeout.
 
 ## Strategy
 
@@ -71,6 +80,35 @@ For `--live` mode only, also fill in `ROBINHOOD_USERNAME`,
 `ROBINHOOD_PASSWORD`, and `ROBINHOOD_TOTP_SECRET` (the base32 secret from
 setting up an authenticator app for 2FA — not SMS codes) in `.env`.
 
+## Telegram alerts + approval (optional)
+
+If `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` are both set in `.env`, the
+agent sends every alert and confirmation request to that chat instead of the
+terminal. If either is blank, it falls back to terminal-only with no remote
+alerts — the agent always has a working confirmation channel either way.
+
+1. **Create a bot:** message [@BotFather](https://t.me/BotFather) on
+   Telegram, send `/newbot`, and follow the prompts. It replies with a token
+   that looks like `123456789:AAExampleTokenDoNotUse`. Put that in
+   `TELEGRAM_BOT_TOKEN`.
+2. **Start a chat with your new bot** (search for it by the username you
+   gave BotFather) and send it any message, e.g. `/start` — Telegram bots
+   can't message you first.
+3. **Find your chat id:** open
+   `https://api.telegram.org/bot<YOUR_TOKEN>/getUpdates` in a browser right
+   after step 2 and look for `"chat":{"id":...}` in the response. Put that
+   number in `TELEGRAM_CHAT_ID`.
+4. Run the agent. You should get an "Agent started" message. Proposed trades
+   arrive with **Approve** / **Decline** buttons.
+
+What gets sent: agent start/stop, every proposed trade (with Approve/Decline
+buttons), fills, declines, order failures, risk limits blocking new entries
+(deduplicated to once per reason per day), hard-exit-forced closes, and
+unhandled errors in the agent loop.
+
+Only replies from the configured `TELEGRAM_CHAT_ID` are ever accepted as an
+approval — button presses from any other chat are logged and ignored.
+
 ## Running
 
 ```bash
@@ -108,8 +146,10 @@ iwm_0dte_agent/
   pricing.py           # Black-Scholes pricer used only by the paper broker
   strategy.py          # ORB + VWAP signal generation (pure functions)
   risk.py               # position sizing and daily risk limits
-  confirm.py             # human confirmation gate — the safety boundary
-  trade_log.py           # CSV audit log of every proposed/filled/declined trade
-  agent.py                # main loop + CLI entrypoint
-tests/                    # unit tests for strategy/risk/pricing
+  notifier.py            # Notifier protocol + factory (Telegram if configured, else terminal)
+  telegram_bot.py         # Telegram alerts + inline-button approve/decline
+  terminal_notifier.py    # terminal fallback: print alerts, y/N confirmation prompt
+  trade_log.py             # CSV audit log of every proposed/filled/declined trade
+  agent.py                  # main loop + CLI entrypoint
+tests/                      # unit tests for strategy/risk/pricing/notifier
 ```

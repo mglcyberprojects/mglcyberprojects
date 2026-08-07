@@ -61,5 +61,13 @@ class Config:
     poll_seconds: int = field(default_factory=lambda: _env_int("POLL_SECONDS", 60))
     trade_log_path: str = field(default_factory=lambda: os.environ.get("TRADE_LOG_PATH", "trade_log.csv"))
 
+    # Telegram alerts + approve/decline confirmation. Optional -- if either
+    # is unset the agent falls back to the terminal confirmation prompt.
+    telegram_bot_token: str = field(default_factory=lambda: os.environ.get("TELEGRAM_BOT_TOKEN", ""))
+    telegram_chat_id: str = field(default_factory=lambda: os.environ.get("TELEGRAM_CHAT_ID", ""))
+    telegram_confirm_timeout_seconds: int = field(
+        default_factory=lambda: _env_int("TELEGRAM_CONFIRM_TIMEOUT_SECONDS", 300)
+    )
+
 
 CONFIG = Config()

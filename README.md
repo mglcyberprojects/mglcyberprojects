@@ -8,4 +8,4 @@
 - <b><a href="https://github.com/mglcyberprojects/Creating-Ethical-Hacking-Tools-Using-Python">Creating Ethical Hacking Tools Using Python</a></b>
 - <b>Using Nessus to Identify Vulnerabilities</b>
 - <b>Building a Virtual HoneyPot</b>
-- <b><a href="iwm_0dte_agent">IWM 0DTE Options Signal Agent</a></b> - A Robinhood-connected signal agent for $IWM 0DTE options with a human-confirmation gate on every trade, paper trading by default
+- <b><a href="iwm_0dte_agent">IWM 0DTE Options Signal Agent</a></b> - A Robinhood-connected signal agent for $IWM 0DTE options with Telegram alerts and an approve/decline gate on every trade, paper trading by default

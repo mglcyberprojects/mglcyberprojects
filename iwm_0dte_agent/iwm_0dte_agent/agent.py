@@ -1,14 +1,15 @@
 """Main loop: watch IWM, generate 0DTE ORB signals, propose trades, and only
-ever act on them after an explicit human confirmation.
+ever act on them after an explicit human confirmation -- via Telegram if
+configured, otherwise the terminal.
 
 Usage:
     python -m iwm_0dte_agent.agent                 # paper trading (default)
     python -m iwm_0dte_agent.agent --live           # real Robinhood orders
     python -m iwm_0dte_agent.agent --once           # single iteration, for testing
 
-Nothing here places a real order without both (a) the --live flag and (b) a
-"y" typed at the confirm() prompt for that specific trade. There is no
-autopilot mode.
+Nothing here places a real order without both (a) the --live flag and (b) an
+explicit approval from the notifier's confirm() for that specific trade.
+There is no autopilot mode.
 """
 
 from __future__ import annotations
@@ -20,8 +21,8 @@ import time as time_module
 
 from .broker import Broker, RobinhoodBroker
 from .config import CONFIG, Config
-from .confirm import confirm
 from .models import OpenPosition, ProposedOrder
+from .notifier import Notifier, build_notifier
 from .paper_broker import PaperBroker
 from .risk import RiskManager
 from .strategy import generate_signal, select_strike
@@ -42,13 +43,30 @@ def _today_open(config: Config) -> dt.datetime:
     )
 
 
+def _maybe_alert_blocked_entry(
+    why: str, notifier: Notifier, alerted_reasons: set[tuple[dt.date, str]],
+) -> None:
+    """Alert the first time (per day) a given risk reason blocks a new entry.
+
+    Without this, a blocked reason would re-alert on every poll cycle
+    (every `poll_seconds`) for the rest of the session.
+    """
+    key = (dt.date.today(), why)
+    if key in alerted_reasons:
+        return
+    alerted_reasons.add(key)
+    notifier.alert(f"No new entries: {why}")
+
+
 def _try_open_position(
     broker: Broker, risk: RiskManager, trade_log: TradeLog, config: Config, live: bool,
+    notifier: Notifier, alerted_reasons: set[tuple[dt.date, str]],
 ) -> OpenPosition | None:
     buying_power = broker.get_buying_power()
     can_open, why = risk.can_open_new_trade(buying_power, dt.datetime.now().time())
     if not can_open:
         logger.debug("Not opening a new trade: %s", why)
+        _maybe_alert_blocked_entry(why, notifier, alerted_reasons)
         return None
 
     bars = broker.get_intraday_bars(config.symbol, since=_today_open(config))
@@ -60,11 +78,19 @@ def _try_open_position(
     contract = select_strike(chain, signal.option_type, signal.underlying_price, config.strike_offset)
     if contract is None or contract.ask <= 0:
         logger.warning("No usable %s contract found near %.2f", signal.option_type.value, signal.underlying_price)
+        notifier.alert(
+            f"Signal fired ({signal.option_type.value.upper()}, {signal.reason}) but no "
+            f"usable contract was found -- skipped."
+        )
         return None
 
     quantity = risk.position_size(buying_power, contract.ask)
     if quantity <= 0:
         logger.info("Position size computed to 0 contracts, skipping signal: %s", signal.reason)
+        notifier.alert(
+            f"Signal fired ({signal.option_type.value.upper()}, {signal.reason}) but position "
+            f"size came out to 0 contracts -- skipped."
+        )
         return None
 
     proposed = ProposedOrder(
@@ -81,12 +107,13 @@ def _try_open_position(
         price=contract.ask, reason=signal.reason,
     )
 
-    if not confirm(proposed, live):
+    if not notifier.confirm(proposed, live):
         trade_log.write(
             "declined_open", symbol=contract.symbol, option_type=contract.option_type.value,
             strike=contract.strike, expiration=contract.expiration, quantity=quantity,
             price=contract.ask, reason=signal.reason,
         )
+        notifier.alert(f"Declined: {contract.option_type.value.upper()} ${contract.strike:g} entry")
         return None
 
     result = broker.submit_order(contract, quantity, contract.ask, side="buy")
@@ -98,8 +125,13 @@ def _try_open_position(
     )
     if not result.submitted:
         logger.error("Order failed: %s", result.detail)
+        notifier.alert(f"Order FAILED: {contract.option_type.value.upper()} ${contract.strike:g} -- {result.detail}")
         return None
 
+    notifier.alert(
+        f"Filled: BUY {quantity}x {contract.option_type.value.upper()} "
+        f"{contract.symbol} ${contract.strike:g} @ ${contract.ask:.2f}"
+    )
     risk.record_trade_opened()
     return OpenPosition(
         contract=contract, quantity=quantity, entry_price=contract.ask,
@@ -122,7 +154,8 @@ def _check_exit(position: OpenPosition, broker: Broker, config: Config, risk: Ri
 
 
 def _try_close_position(
-    position: OpenPosition, broker: Broker, risk: RiskManager, trade_log: TradeLog, live: bool, config: Config,
+    position: OpenPosition, broker: Broker, risk: RiskManager, trade_log: TradeLog, live: bool,
+    config: Config, notifier: Notifier,
 ) -> bool:
     reason = _check_exit(position, broker, config, risk)
     if reason is None:
@@ -139,12 +172,13 @@ def _try_close_position(
         strike=quote.strike, expiration=quote.expiration, quantity=position.quantity,
         price=quote.bid, reason=reason,
     )
-    if not confirm(proposed, live):
+    if not notifier.confirm(proposed, live):
         trade_log.write(
             "declined_close", symbol=quote.symbol, option_type=quote.option_type.value,
             strike=quote.strike, expiration=quote.expiration, quantity=position.quantity,
             price=quote.bid, reason=reason,
         )
+        notifier.alert(f"Declined close ({reason}) -- position still open, will re-check next cycle")
         return False
 
     result = broker.submit_order(position.contract, position.quantity, quote.bid, side="sell")
@@ -157,6 +191,12 @@ def _try_close_position(
     )
     if result.submitted:
         risk.record_trade_closed(pnl)
+        notifier.alert(
+            f"Closed ({reason}): SELL {position.quantity}x {quote.option_type.value.upper()} "
+            f"{quote.symbol} ${quote.strike:g} @ ${quote.bid:.2f} -- P&L ${pnl:.2f}"
+        )
+    else:
+        notifier.alert(f"Close order FAILED ({reason}) -- {result.detail}")
     return result.submitted
 
 
@@ -173,28 +213,42 @@ def run(live: bool, once: bool, config: Config = CONFIG) -> None:
             print("Aborting.")
             return
 
+    notifier = build_notifier(config)
     broker = _build_broker(live, config)
-    broker.login()
+
+    try:
+        broker.login()
+    except Exception as exc:
+        notifier.alert(f"Agent failed to start: login error -- {exc}")
+        raise
+
     risk = RiskManager(config=config)
     trade_log = TradeLog(config.trade_log_path)
+    alerted_reasons: set[tuple[dt.date, str]] = set()
 
     position: OpenPosition | None = None
-    logger.info("Agent started (%s mode) for %s", "LIVE" if live else "paper", config.symbol)
+    mode = "LIVE" if live else "paper"
+    logger.info("Agent started (%s mode) for %s", mode, config.symbol)
+    notifier.alert(f"Agent started ({mode} mode) for {config.symbol}")
 
     while True:
         now = dt.datetime.now().time()
         if now >= config.market_close:
             logger.info("Market closed, stopping.")
+            notifier.alert("Market closed, agent stopping for the day.")
             break
 
         try:
             if position is not None:
-                if _try_close_position(position, broker, risk, trade_log, live, config):
+                if _try_close_position(position, broker, risk, trade_log, live, config, notifier):
                     position = None
             else:
-                position = _try_open_position(broker, risk, trade_log, config, live)
-        except Exception:
+                position = _try_open_position(
+                    broker, risk, trade_log, config, live, notifier, alerted_reasons
+                )
+        except Exception as exc:
             logger.exception("Error in agent loop iteration")
+            notifier.alert(f"Error in agent loop: {exc!r}")
 
         if once:
             break
