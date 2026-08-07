@@ -183,6 +183,54 @@ python -m iwm_0dte_agent --list-mcp-tools
 All proposed and executed trades are appended to `trade_log.csv`
 (configurable via `TRADE_LOG_PATH`).
 
+## Running unattended on Windows
+
+`deploy/run_agent.bat` + `deploy/setup_autostart.ps1` register the agent as
+a Windows Scheduled Task that starts automatically when you log in and
+restarts itself if it crashes — the closest Windows equivalent to a Linux
+`systemd` service, no extra tools to install.
+
+**Telegram must be configured first (see above).** With no console window
+in front of you, a terminal `y/N` confirmation prompt would just hang
+forever waiting for input that can never arrive. `run_agent.bat` runs in
+paper mode only (no `--live`) for the same reason: `--live` mode has its
+own one-time `Type LIVE to confirm` startup prompt that also needs a real
+interactive terminal, so don't point this at `--live` yet — ask if you want
+help routing that confirmation through Telegram too before you do.
+
+Set it up:
+
+```powershell
+cd iwm_0dte_agent\deploy
+.\setup_autostart.ps1
+```
+
+That registers a task named `IWM0DTEAgent` triggered at your next logon. To
+start it immediately without logging out:
+
+```powershell
+schtasks /Run /TN IWM0DTEAgent
+```
+
+You'll get a console window titled "IWM 0DTE Agent" (safe to minimize, not
+to close) plus a running log at `iwm_0dte_agent\logs\agent.log`. Day-to-day
+visibility is meant to come from Telegram, not that window — the log is a
+backstop for debugging startup failures.
+
+Stop / remove it:
+
+```powershell
+taskkill /FI "WINDOWTITLE eq IWM 0DTE Agent" /T /F   # stop the running agent
+schtasks /Delete /TN IWM0DTEAgent /F                 # remove the scheduled task entirely
+```
+
+Note this only runs while you're logged in to Windows (not across a full
+logoff/lock-screen-only is fine, a sign-out is not) — good enough for a
+machine you leave logged in during market hours. If you want it to survive
+being fully logged off too, that needs the Scheduled Task's "run whether
+user is logged on or not" option, which requires storing your Windows
+password in Task Scheduler — ask if you want that set up.
+
 ## Tests
 
 ```bash
@@ -211,4 +259,7 @@ iwm_0dte_agent/
   trade_log.py          # CSV audit log of every proposed/filled/declined trade
   agent.py              # main loop + CLI entrypoint
 tests/                  # unit tests for strategy/risk/pricing/notifier/mcp_broker
+deploy/
+  run_agent.bat         # Windows restart-loop wrapper (paper mode)
+  setup_autostart.ps1   # registers run_agent.bat as a logon-triggered Scheduled Task
 ```
