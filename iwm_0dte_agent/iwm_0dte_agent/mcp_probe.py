@@ -3,12 +3,16 @@ discover real argument/response shapes before wiring a tool into
 MCPBroker properly, instead of guessing.
 
 Usage:
-    python -m iwm_0dte_agent.mcp_probe describe <tool_name>
+    python -m iwm_0dte_agent.mcp_probe describe <tool_name> [<tool_name> ...] [--out FILE]
     python -m iwm_0dte_agent.mcp_probe call <tool_name> ['<json arguments>']
 
-`describe` only reads the tool's declared JSON schema from the server's own
+`describe` only reads each tool's declared JSON schema from the server's own
 list_tools() response -- it never actually invokes the tool, so it's always
-safe to run on anything, including order-placement tools.
+safe to run on anything, including order-placement tools. Takes one
+connection and any number of tool names, so you can dump several schemas
+in one run; `--out FILE` writes them to a file instead of the terminal,
+which is easier to share back accurately than a screenshot for anything
+this detail-sensitive.
 
 `call` actually invokes the tool and prints the raw response. Safe for
 read-only tools (get_option_chains, get_option_quotes, get_option_positions,
@@ -19,8 +23,8 @@ side effects on your account. `describe` them instead.
 
 Examples:
     python -m iwm_0dte_agent.mcp_probe describe get_option_chains
-    python -m iwm_0dte_agent.mcp_probe call get_option_chains '{"symbol": "IWM"}'
-    python -m iwm_0dte_agent.mcp_probe call get_equity_quotes '{"symbols": ["IWM"]}'
+    python -m iwm_0dte_agent.mcp_probe describe get_option_instruments get_option_quotes place_option_order review_option_order --out option_schemas.txt
+    python -m iwm_0dte_agent.mcp_probe call get_option_chains '{"underlying_symbol": "IWM"}'
 """
 
 from __future__ import annotations
@@ -47,23 +51,35 @@ def _jsonable(value: Any) -> Any:
     return value
 
 
-def describe(tool_name: str) -> None:
+def _describe_one(broker: MCPBroker, tool_name: str, out) -> None:
+    info = broker.describe_tool(tool_name)
+    if info is None:
+        print(
+            f"\n{tool_name!r} was not found among the discovered tools. "
+            f"Run `python -m iwm_0dte_agent --list-mcp-tools` to see what's available.",
+            file=out,
+        )
+        return
+    print(f"\n=== {tool_name} ===", file=out)
+    print(f"description: {info['description']}", file=out)
+    print("\ninput_schema:", file=out)
+    print(json.dumps(_jsonable(info["input_schema"]), indent=2, default=str), file=out)
+    print("\noutput_schema:", file=out)
+    print(json.dumps(_jsonable(info["output_schema"]), indent=2, default=str), file=out)
+
+
+def describe(tool_names: list[str], out_path: str | None = None) -> None:
     broker = MCPBroker(CONFIG)
     try:
         broker.connect()
-        info = broker.describe_tool(tool_name)
-        if info is None:
-            print(
-                f"\n{tool_name!r} was not found among the discovered tools. "
-                f"Run `python -m iwm_0dte_agent --list-mcp-tools` to see what's available."
-            )
-            return
-        print(f"\n=== {tool_name} ===")
-        print(f"description: {info['description']}")
-        print("\ninput_schema:")
-        print(json.dumps(_jsonable(info["input_schema"]), indent=2, default=str))
-        print("\noutput_schema:")
-        print(json.dumps(_jsonable(info["output_schema"]), indent=2, default=str))
+        if out_path:
+            with open(out_path, "w", encoding="utf-8") as f:
+                for tool_name in tool_names:
+                    _describe_one(broker, tool_name, f)
+            print(f"Wrote {len(tool_names)} tool schema(s) to {out_path}")
+        else:
+            for tool_name in tool_names:
+                _describe_one(broker, tool_name, sys.stdout)
     finally:
         broker.close()
 
@@ -99,17 +115,18 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="command", required=True)
 
-    describe_parser = sub.add_parser("describe", help="Print a tool's input/output JSON schema (never invokes it)")
-    describe_parser.add_argument("tool_name")
+    describe_parser = sub.add_parser("describe", help="Print one or more tools' input/output JSON schema (never invokes them)")
+    describe_parser.add_argument("tool_name", nargs="+", help="One or more tool names")
+    describe_parser.add_argument("--out", default=None, help="Write to this file instead of stdout")
 
     call_parser = sub.add_parser("call", help="Actually invoke a tool and print the raw response")
     call_parser.add_argument("tool_name")
-    call_parser.add_argument("arguments", nargs="?", default="{}", help='JSON object, e.g. \'{"symbol": "IWM"}\'')
+    call_parser.add_argument("arguments", nargs="?", default="{}", help='JSON object, e.g. \'{"underlying_symbol": "IWM"}\'')
 
     args = parser.parse_args()
 
     if args.command == "describe":
-        describe(args.tool_name)
+        describe(args.tool_name, out_path=args.out)
         return
 
     try:

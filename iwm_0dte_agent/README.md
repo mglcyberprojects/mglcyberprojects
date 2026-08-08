@@ -166,13 +166,14 @@ in (rather than guessing), use `mcp_probe.py`:
 
 ```bash
 # Safe on anything, including order-placement tools -- reads the schema
-# the server declares, never actually calls the tool:
-python -m iwm_0dte_agent.mcp_probe describe get_option_chains
+# the server declares, never actually calls the tool. Takes any number of
+# tool names and an optional --out FILE to dump several schemas at once:
+python -m iwm_0dte_agent.mcp_probe describe get_option_chains get_option_instruments --out option_schemas.txt
 
 # Actually invokes the tool and prints the raw response. Fine for
 # read-only tools; requires a second confirmation for anything that can
 # place/cancel/modify an order or exercise a position:
-python -m iwm_0dte_agent.mcp_probe call get_option_chains '{"symbol": "IWM"}'
+python -m iwm_0dte_agent.mcp_probe call get_option_chains '{"underlying_symbol": "IWM"}'
 ```
 
 This integration was originally written and unit-tested without network
