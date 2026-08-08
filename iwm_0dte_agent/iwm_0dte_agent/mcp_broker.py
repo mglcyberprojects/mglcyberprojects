@@ -18,17 +18,20 @@ though -- see README.md's "Troubleshooting the MCP connection" section, and
 treat any `MCPError` you hit as useful information to report back.
 
 As of a live connection in August 2026, Robinhood's MCP server exposes 54
-tools including a full options surface: get_option_chains, get_option_quotes,
-place_option_order, review_option_order, cancel_option_order,
-get_option_positions, get_option_orders, and more. This client still only
-relies on MCP for account/underlying-price data, though -- everything
-options-related (0DTE chain lookup, option quotes, order placement) still
-goes through the robin_stocks-based RobinhoodBroker for now, pending
-mapping the real request/response shapes of those option tools (see
-mcp_probe.py) and wiring them in deliberately rather than guessing.
+tools including a full options surface, and options trading is wired up to
+use it directly: get_option_chains -> get_option_instruments (paginated) ->
+get_option_quotes for reading a 0DTE chain, and review_option_order ->
+place_option_order for submitting a trade, gated on get_accounts showing
+agentic_allowed=true and option_level_2/3. Schemas for all five tools were
+fetched from a live connection via mcp_probe.py before writing this, not
+guessed. `robin_stocks` (via RobinhoodBroker) remains the fallback only for
+`get_intraday_bars` (underlying price history), which doesn't have a mapped
+MCP equivalent yet.
+
 `login()` logs a warning if it spots any newly-discovered tool with
-"option" in its name, which is exactly how the options surface above was
-first noticed.
+"option" in its name -- that's exactly how the options surface above was
+first noticed, so the same mechanism will flag it if Robinhood adds
+something new (e.g. multi-leg-specific tools) this client doesn't use yet.
 """
 
 from __future__ import annotations
@@ -38,6 +41,7 @@ import datetime as dt
 import json
 import logging
 import threading
+import uuid
 import webbrowser
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
@@ -46,9 +50,11 @@ from urllib.parse import parse_qs, urlparse
 
 from .broker import Broker, RobinhoodBroker
 from .config import Config
-from .models import Bar, OptionContract, OrderResult
+from .models import Bar, OptionContract, OptionType, OrderResult
 
 logger = logging.getLogger(__name__)
+
+_ELIGIBLE_OPTION_LEVELS = {"option_level_2", "option_level_3"}
 
 
 class MCPError(RuntimeError):
@@ -271,6 +277,8 @@ class MCPBroker(Broker):
         self._config = config
         self._fallback = fallback or RobinhoodBroker(config)
         self._mcp_session: _MCPSession | None = None
+        self._account_number: str | None = None
+        self._instrument_cache: dict[str, dict] = {}
 
     def list_discovered_tools(self) -> set[str]:
         return set(self._mcp_session.tool_names) if self._mcp_session else set()
@@ -300,17 +308,22 @@ class MCPBroker(Broker):
             "Connected to Robinhood MCP (%s), discovered %d tools: %s",
             self._config.robinhood_mcp_url, len(tool_names), sorted(tool_names),
         )
-        option_like = sorted(n for n in tool_names if "option" in n.lower())
+        used_option_tools = {
+            "get_option_chains", "get_option_instruments", "get_option_quotes",
+            "review_option_order", "place_option_order",
+        }
+        option_like = sorted(n for n in tool_names if "option" in n.lower() and n not in used_option_tools)
         if option_like:
             logger.warning(
-                "Detected possibly-new option-related MCP tools not yet used by this "
-                "client: %s. Options trading still goes through robin_stocks -- if these "
-                "are real, ask to have MCPBroker wired up to use them.", option_like,
+                "Detected option-related MCP tools not yet wired up: %s. (Chain lookup, "
+                "quotes, and order placement already use the MCP path -- these are "
+                "additional ones, e.g. positions/orders history/exercise, not used yet.)",
+                option_like,
             )
 
     def login(self) -> None:
         self.connect()
-        self._fallback.login()  # options order flow still needs robin_stocks directly
+        self._fallback.login()  # get_intraday_bars still needs robin_stocks directly
 
     def close(self) -> None:
         if self._mcp_session is not None:
@@ -376,13 +389,165 @@ class MCPBroker(Broker):
     def get_intraday_bars(self, symbol: str, since: dt.datetime) -> list[Bar]:
         return self._fallback.get_intraday_bars(symbol, since)
 
+    # --- Broker interface: options, MCP-backed ---
+
+    def _resolve_account_number(self) -> str:
+        if self._account_number is not None:
+            return self._account_number
+        data = self._call_tool_sync("get_accounts", {})
+        accounts = (data.get("data") or {}).get("accounts") or []
+        eligible = [
+            a for a in accounts
+            if a and a.get("agentic_allowed") is True
+            and a.get("option_level") in _ELIGIBLE_OPTION_LEVELS
+            and a.get("state") == "active"
+            and not a.get("deactivated")
+            and not a.get("permanently_deactivated")
+        ]
+        if not eligible:
+            raise MCPError(
+                "No Robinhood account is agentic_allowed with option_level_2/3 approval. "
+                "Enable agentic trading and options level 2+ on an account, then retry."
+            )
+        chosen = next((a for a in eligible if a.get("is_default")), eligible[0])
+        if len(eligible) > 1:
+            logger.warning(
+                "Multiple eligible accounts found, using account ending %s",
+                str(chosen.get("account_number", ""))[-4:],
+            )
+        self._account_number = chosen["account_number"]
+        return self._account_number
+
+    @staticmethod
+    def _extract_cursor(next_url: str | None) -> str | None:
+        if not next_url:
+            return None
+        values = parse_qs(urlparse(next_url).query).get("cursor")
+        return values[0] if values else None
+
+    def _fetch_option_instruments(self, chain_id: str, expiration_date: str) -> list[dict]:
+        instruments: list[dict] = []
+        cursor: str | None = None
+        for _ in range(20):  # pagination safety cap
+            args = {
+                "chain_id": chain_id, "expiration_dates": expiration_date,
+                "state": "active", "tradability": "tradable",
+            }
+            if cursor:
+                args["cursor"] = cursor
+            data = self._call_tool_sync("get_option_instruments", args)
+            page = (data.get("data") or {}).get("instruments") or []
+            instruments.extend(i for i in page if i is not None)
+            cursor = self._extract_cursor((data.get("data") or {}).get("next"))
+            if not cursor:
+                break
+        return instruments
+
+    def _fetch_option_quotes(self, instrument_ids: list[str]) -> dict[str, dict]:
+        if not instrument_ids:
+            return {}
+        data = self._call_tool_sync("get_option_quotes", {"instrument_ids": instrument_ids})
+        results = (data.get("data") or {}).get("results") or []
+        quotes: dict[str, dict] = {}
+        for entry in results:
+            quote = (entry or {}).get("quote")
+            if quote and quote.get("instrument_id"):
+                quotes[quote["instrument_id"]] = quote
+        return quotes
+
+    def _build_contract(self, instrument: dict, quote: dict) -> OptionContract:
+        bid = float(quote.get("bid_price") or 0)
+        ask = float(quote.get("ask_price") or 0)
+        mark = quote.get("mark_price")
+        mid = float(mark) if mark else round((bid + ask) / 2, 2)
+        self._instrument_cache[instrument["id"]] = instrument
+        return OptionContract(
+            symbol=instrument["chain_symbol"],
+            strike=float(instrument["strike_price"]),
+            option_type=OptionType(instrument["type"]),
+            expiration=instrument["expiration_date"],
+            bid=bid, ask=ask, mid=mid,
+            contract_id=instrument["id"],
+        )
+
     def get_0dte_chain(self, symbol: str) -> Sequence[OptionContract]:
-        return self._fallback.get_0dte_chain(symbol)
+        today = dt.date.today().isoformat()
+        chains_data = self._call_tool_sync("get_option_chains", {"underlying_symbol": symbol})
+        chains = (chains_data.get("data") or {}).get("chains") or []
+        chain = next(
+            (c for c in chains if c and today in (c.get("expiration_dates") or []) and c.get("can_open_position")),
+            None,
+        )
+        if chain is None:
+            logger.warning("No %s option chain with a %s expiration found (0DTE not available today?)", symbol, today)
+            return []
+
+        instruments = self._fetch_option_instruments(chain["id"], today)
+        if not instruments:
+            return []
+        quotes = self._fetch_option_quotes([i["id"] for i in instruments if i.get("id")])
+        contracts = []
+        for instrument in instruments:
+            quote = quotes.get(instrument.get("id"))
+            if quote is None:
+                continue
+            contracts.append(self._build_contract(instrument, quote))
+        return contracts
 
     def get_option_quote(self, contract_id: str) -> OptionContract:
-        return self._fallback.get_option_quote(contract_id)
+        instrument = self._instrument_cache.get(contract_id)
+        if instrument is None:
+            data = self._call_tool_sync("get_option_instruments", {"ids": contract_id})
+            found = [i for i in ((data.get("data") or {}).get("instruments") or []) if i]
+            if not found:
+                raise MCPError(f"Option instrument {contract_id} not found via get_option_instruments")
+            instrument = found[0]
+        quote = self._fetch_option_quotes([contract_id]).get(contract_id)
+        if quote is None:
+            raise MCPError(f"No quote returned for option instrument {contract_id}")
+        return self._build_contract(instrument, quote)
 
     def submit_order(
         self, contract: OptionContract, quantity: int, limit_price: float, side: str,
     ) -> OrderResult:
-        return self._fallback.submit_order(contract, quantity, limit_price, side)
+        try:
+            account_number = self._resolve_account_number()
+        except MCPError as exc:
+            return OrderResult(submitted=False, broker_order_id=None, detail=str(exc))
+
+        # This agent only ever buys to open and sells to close (never writes
+        # naked/short options), so side alone determines position_effect.
+        position_effect = "open" if side == "buy" else "close"
+        legs = [{"option_id": contract.contract_id, "side": side, "position_effect": position_effect}]
+        price_str = f"{limit_price:.2f}"
+
+        review_args = {
+            "account_number": account_number, "legs": legs, "quantity": str(quantity),
+            "type": "limit", "price": price_str, "time_in_force": "gfd",
+            "chain_symbol": contract.symbol, "underlying_type": "equity",
+        }
+        try:
+            review = self._call_tool_sync("review_option_order", review_args)
+        except MCPError as exc:
+            return OrderResult(submitted=False, broker_order_id=None, detail=f"review_option_order failed: {exc}")
+
+        order_checks = (review.get("data") or {}).get("order_checks") or {}
+        if order_checks:
+            detail = f"Robinhood flagged this order: {order_checks.get('alertType')} {order_checks.get('details')}"
+            logger.warning("Declining to place order -- %s", detail)
+            return OrderResult(submitted=False, broker_order_id=None, detail=detail)
+
+        place_args = {
+            "account_number": account_number, "legs": legs, "quantity": str(quantity),
+            "type": "limit", "price": price_str, "time_in_force": "gfd",
+            "ref_id": str(uuid.uuid4()),
+        }
+        try:
+            placed = self._call_tool_sync("place_option_order", place_args)
+        except MCPError as exc:
+            return OrderResult(submitted=False, broker_order_id=None, detail=f"place_option_order failed: {exc}")
+
+        order = (placed.get("data") or {}).get("order")
+        if not order:
+            return OrderResult(submitted=False, broker_order_id=None, detail=f"place_option_order returned no order: {placed}")
+        return OrderResult(submitted=True, broker_order_id=order.get("id"), detail=f"state={order.get('state')}")

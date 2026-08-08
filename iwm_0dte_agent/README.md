@@ -12,18 +12,19 @@ the terminal or approved/declined from Telegram. There is no autopilot mode.
   within hours, and often expire worthless. This project is not investment
   advice, and past behavior of any strategy here is no guarantee of future
   results.
-- **Robinhood options trading still goes through an unofficial client.**
-  Robinhood launched an official, OAuth-based "Agentic Trading" MCP server
-  in May 2026 (`agent.robinhood.com/mcp/trading`), and `--live` mode uses it
-  by default for account balance and IWM's underlying price. But as of this
-  writing, that server does not yet expose options order placement — so
-  0DTE option chain lookups and every actual order this agent places still
-  go through [`robin_stocks`](https://github.com/jmfernandes/robin_stocks),
-  an unofficial, reverse-engineered client. Using it to automate trading is
-  against Robinhood's Terms of Service and can get an account flagged,
-  restricted, or closed. That risk is yours if you enable `--live`. See
-  "Robinhood's official MCP server" below for details and how to check
-  whether that's changed.
+- **`--live` mode now places real options orders through Robinhood's
+  official Agentic Trading MCP server** (`agent.robinhood.com/mcp/trading`,
+  OAuth-based), not the unofficial `robin_stocks` client — as of an August
+  2026 connection, that server exposes a full options surface
+  (`get_option_chains`, `get_option_quotes`, `review_option_order`,
+  `place_option_order`, ...) and this agent's 0DTE chain lookup, quotes, and
+  order submission all go through it. [`robin_stocks`](https://github.com/jmfernandes/robin_stocks)
+  (unofficial, against Robinhood's Terms of Service) remains only as the
+  source for underlying intraday price bars, which don't have a mapped MCP
+  equivalent yet — a materially smaller risk surface than before, but not
+  zero. This is new and has only been validated against one real account's
+  schema so far; see "Robinhood's official MCP server" below before trusting
+  it with real money.
 - **Default mode is paper trading.** Running the agent with no flags never
   touches Robinhood or real money — it simulates fills against real IWM
   price data pulled via `yfinance`, with a synthetic (Black-Scholes) option
@@ -134,15 +135,28 @@ setting up an authenticator app for 2FA — not SMS codes) in `.env`.
 ## Robinhood's official MCP server
 
 `--live` mode defaults to `USE_ROBINHOOD_MCP=true`, which connects to
-Robinhood's official Agentic Trading MCP server for account balance and
-IWM's underlying price via OAuth — you authorize in your own browser, the
-agent never sees your Robinhood password for that part. **0DTE options
-(chain lookup and every order this agent actually places) still go through
-`robin_stocks` regardless of this setting**, because Robinhood's MCP server
-does not yet expose options tools. `ROBINHOOD_USERNAME` / `PASSWORD` /
-`TOTP_SECRET` are therefore still required in `.env` even with MCP enabled.
-Set `USE_ROBINHOOD_MCP=false` to skip MCP entirely and use `robin_stocks`
-for everything, the way this project worked before the MCP server existed.
+Robinhood's official Agentic Trading MCP server via OAuth — you authorize in
+your own browser, the agent never sees your Robinhood password for this
+part. As of an August 2026 connection, this covers account balance,
+underlying quotes, **and the full options path**: `get_option_chains` →
+`get_option_instruments` → `get_option_quotes` for reading the 0DTE chain,
+and `review_option_order` → `place_option_order` for submitting a trade
+(declining automatically if Robinhood's own pre-trade `order_checks` flags
+anything). `robin_stocks` remains only as the source for underlying
+intraday price bars (`get_intraday_bars`), which don't have a mapped MCP
+equivalent yet — so `ROBINHOOD_USERNAME`/`PASSWORD`/`TOTP_SECRET` are still
+required in `.env`. Set `USE_ROBINHOOD_MCP=false` to skip MCP entirely and
+use `robin_stocks` for everything, the way this project worked before the
+MCP server existed — a reasonable fallback if the MCP options path ever
+misbehaves on your account.
+
+**This is new and has only been schema-validated against one real
+account**, via `mcp_probe.py describe` (reads each tool's declared JSON
+schema without ever invoking it) rather than trial-and-error against real
+orders. Everything downstream of `submit_order` still sits behind this
+project's existing human-confirmation gate — nothing places automatically —
+but treat the first several `--live` runs as something to watch closely,
+not something to walk away from.
 
 **Check what's live on your account** without running the trading loop or
 touching robin_stocks at all:
@@ -151,18 +165,14 @@ touching robin_stocks at all:
 python -m iwm_0dte_agent --list-mcp-tools
 ```
 
-This connects via OAuth (opens your browser to Robinhood's login) and
-prints every tool the server currently exposes. If you see anything with
-"option" in the name, the agent will also log a warning about it on
-`--live` startup — that's your sign options support may have landed, and
-worth asking to have wired into `mcp_broker.py`'s `MCPBroker` so order
-placement moves off `robin_stocks` too. (As of an August 2026 connection,
-it has: `get_option_chains`, `get_option_quotes`, `place_option_order`,
-`review_option_order`, `cancel_option_order`, and more are live — options
-order placement just isn't wired into `MCPBroker` yet.)
+This connects via OAuth and prints every tool the server currently
+exposes. `login()` also logs a warning if it spots any option-related tool
+name this client doesn't already use (e.g. multi-leg-specific tools,
+`cancel_option_order`, `exercise_option`) — that's your sign Robinhood
+added something new worth wiring in too.
 
-To inspect a specific tool's real request/response shape before wiring it
-in (rather than guessing), use `mcp_probe.py`:
+To inspect a specific tool's real request/response shape before changing
+how it's used (rather than guessing), use `mcp_probe.py`:
 
 ```bash
 # Safe on anything, including order-placement tools -- reads the schema
@@ -176,13 +186,7 @@ python -m iwm_0dte_agent.mcp_probe describe get_option_chains get_option_instrum
 python -m iwm_0dte_agent.mcp_probe call get_option_chains '{"underlying_symbol": "IWM"}'
 ```
 
-This integration was originally written and unit-tested without network
-access to `robinhood.com`, so the OAuth handshake, connection lifecycle,
-and tool discovery are now confirmed working against the live server —
-the exact request/response shapes for individual tools (beyond the two
-already wired up, `get_portfolio`/`get_equity_quotes`) are still
-best-effort. If `--list-mcp-tools`, `mcp_probe.py`, or `--live` fails
-during the MCP step:
+If `--list-mcp-tools`, `mcp_probe.py`, or `--live` fails during the MCP step:
 
 - The OAuth flow opens `http://127.0.0.1:8765/callback` (configurable via
   `ROBINHOOD_MCP_OAUTH_PORT`) to catch the redirect — make sure nothing else
@@ -332,7 +336,7 @@ iwm_0dte_agent/
   config.py             # env-driven configuration
   models.py             # shared dataclasses (Bar, OptionContract, TradeSignal, ...)
   broker.py             # Broker interface + live Robinhood implementation (robin_stocks)
-  mcp_broker.py         # Robinhood's official MCP server for account/equity data, robin_stocks fallback for options
+  mcp_broker.py         # Robinhood's official MCP server: account data + full 0DTE options path, robin_stocks fallback for intraday bars only
   mcp_probe.py          # CLI to inspect a Robinhood MCP tool's schema/response before wiring it into MCPBroker
   market_data.py        # yfinance download + DataFrame-to-Bar conversion, shared by paper broker + backtester
   paper_broker.py       # simulated broker for --dry-run (default)
