@@ -1,11 +1,15 @@
-"""Broker interface plus the live Robinhood implementation.
+"""Broker interface plus the robin_stocks-backed live implementation.
 
-Robinhood has no official public trading API. This module talks to it via
-``robin_stocks``, an unofficial, reverse-engineered client. Using it to
-automate trading is against Robinhood's Terms of Service and can lead to
-account restrictions -- that risk sits entirely with whoever runs this in
-``--live`` mode. Nothing in this module places an order on its own; the
-agent loop only calls ``submit_order`` after an explicit human confirmation.
+RobinhoodBroker talks to Robinhood via ``robin_stocks``, an unofficial,
+reverse-engineered client -- using it to automate trading is against
+Robinhood's Terms of Service and can lead to account restrictions, a risk
+that sits entirely with whoever runs this. It is NOT the default ``--live``
+broker: MCPBroker (mcp_broker.py), which talks only to Robinhood's official
+OAuth-based Agentic Trading MCP server, is used whenever
+``USE_ROBINHOOD_MCP=true`` (the default). RobinhoodBroker only comes into
+play if that's explicitly set to false. Nothing in this module places an
+order on its own either way; the agent loop only calls ``submit_order``
+after an explicit human confirmation.
 """
 
 from __future__ import annotations

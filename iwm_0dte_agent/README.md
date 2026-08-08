@@ -16,19 +16,19 @@ first `--live` session, and what to expect during one.
   within hours, and often expire worthless. This project is not investment
   advice, and past behavior of any strategy here is no guarantee of future
   results.
-- **`--live` mode now places real options orders through Robinhood's
-  official Agentic Trading MCP server** (`agent.robinhood.com/mcp/trading`,
+- **`--live` mode places real options orders through Robinhood's official
+  Agentic Trading MCP server** (`agent.robinhood.com/mcp/trading`,
   OAuth-based), not the unofficial `robin_stocks` client — as of an August
   2026 connection, that server exposes a full options surface
   (`get_option_chains`, `get_option_quotes`, `review_option_order`,
-  `place_option_order`, ...) and this agent's 0DTE chain lookup, quotes, and
-  order submission all go through it. [`robin_stocks`](https://github.com/jmfernandes/robin_stocks)
-  (unofficial, against Robinhood's Terms of Service) remains only as the
-  source for underlying intraday price bars, which don't have a mapped MCP
-  equivalent yet — a materially smaller risk surface than before, but not
-  zero. This is new and has only been validated against one real account's
-  schema so far; see "Robinhood's official MCP server" below before trusting
-  it with real money.
+  `place_option_order`, ...) and this agent's account data, underlying price
+  bars, 0DTE chain lookup, quotes, and order submission all go through it.
+  With the default `USE_ROBINHOOD_MCP=true`, [`robin_stocks`](https://github.com/jmfernandes/robin_stocks)
+  (unofficial, against Robinhood's Terms of Service) is never imported,
+  logged into, or called at all — that risk only applies if you explicitly
+  set `USE_ROBINHOOD_MCP=false`. This is new and has only been validated
+  against one real account's schema so far; see "Robinhood's official MCP
+  server" below before trusting it with real money.
 - **Default mode is paper trading.** Running the agent with no flags never
   touches Robinhood or real money — it simulates fills against real IWM
   price data pulled via `yfinance`, with a synthetic (Black-Scholes) option
@@ -157,27 +157,34 @@ pip install -r requirements.txt
 cp .env.example .env   # edit strategy/risk parameters as desired
 ```
 
-For `--live` mode only, also fill in `ROBINHOOD_USERNAME`,
-`ROBINHOOD_PASSWORD`, and `ROBINHOOD_TOTP_SECRET` (the base32 secret from
-setting up an authenticator app for 2FA — not SMS codes) in `.env`.
+`ROBINHOOD_USERNAME`/`PASSWORD`/`TOTP_SECRET` are **not** needed for the
+default `--live` path — see below. Only fill them in if you plan to set
+`USE_ROBINHOOD_MCP=false`.
 
 ## Robinhood's official MCP server
 
 `--live` mode defaults to `USE_ROBINHOOD_MCP=true`, which connects to
 Robinhood's official Agentic Trading MCP server via OAuth — you authorize in
-your own browser, the agent never sees your Robinhood password for this
-part. As of an August 2026 connection, this covers account balance,
-underlying quotes, **and the full options path**: `get_option_chains` →
-`get_option_instruments` → `get_option_quotes` for reading the 0DTE chain,
-and `review_option_order` → `place_option_order` for submitting a trade
-(declining automatically if Robinhood's own pre-trade `order_checks` flags
-anything). `robin_stocks` remains only as the source for underlying
-intraday price bars (`get_intraday_bars`), which don't have a mapped MCP
-equivalent yet — so `ROBINHOOD_USERNAME`/`PASSWORD`/`TOTP_SECRET` are still
-required in `.env`. Set `USE_ROBINHOOD_MCP=false` to skip MCP entirely and
-use `robin_stocks` for everything, the way this project worked before the
-MCP server existed — a reasonable fallback if the MCP options path ever
-misbehaves on your account.
+your own browser, the agent never sees your Robinhood password at all. As of
+an August 2026 connection, this covers account balance, underlying quotes,
+**and the full options path**: `get_option_chains` → `get_option_instruments`
+→ `get_option_quotes` for reading the 0DTE chain, and `review_option_order`
+→ `place_option_order` for submitting a trade (declining automatically if
+Robinhood's own pre-trade `order_checks` flags anything). There's no MCP
+tool for historical price bars, only a live quote — so rather than falling
+back to `robin_stocks` for those, `get_intraday_bars` builds its own 5-minute
+OHLC bars in process from the same quote polls the agent already makes every
+cycle (see `bar_builder.py`). With `USE_ROBINHOOD_MCP=true`, the default,
+`robin_stocks` is never imported, never logged into, and never called —
+`ROBINHOOD_USERNAME`/`PASSWORD`/`TOTP_SECRET` aren't needed. The one
+consequence: the opening range is only as good as how long the agent has
+been running, so start it at or before market open.
+
+Set `USE_ROBINHOOD_MCP=false` to skip MCP entirely and use `robin_stocks`
+for everything instead, the way this project worked before the MCP server
+existed — a reasonable fallback if the MCP path ever misbehaves on your
+account, but note this brings back `robin_stocks`' automation-against-ToS
+risk (see `broker.py`), which the default path above avoids entirely.
 
 **This is new and has only been schema-validated against one real
 account**, via `mcp_probe.py describe` (reads each tool's declared JSON
@@ -364,8 +371,9 @@ synthetic option pricer — all pure functions, no network or broker calls.
 iwm_0dte_agent/
   config.py             # env-driven configuration
   models.py             # shared dataclasses (Bar, OptionContract, TradeSignal, ...)
-  broker.py             # Broker interface + live Robinhood implementation (robin_stocks)
-  mcp_broker.py         # Robinhood's official MCP server: account data + full 0DTE options path, robin_stocks fallback for intraday bars only
+  broker.py             # Broker interface + robin_stocks implementation (only used if USE_ROBINHOOD_MCP=false)
+  mcp_broker.py         # Robinhood's official MCP server: account data, price bars, full 0DTE options path -- default --live broker
+  bar_builder.py        # In-process OHLC bar accumulation from MCP quote polls (no MCP historical-bars tool exists)
   mcp_probe.py          # CLI to inspect a Robinhood MCP tool's schema/response before wiring it into MCPBroker
   market_data.py        # yfinance download + DataFrame-to-Bar conversion, shared by paper broker + backtester
   paper_broker.py       # simulated broker for --dry-run (default)

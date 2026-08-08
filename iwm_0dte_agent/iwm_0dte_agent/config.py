@@ -34,7 +34,10 @@ def _env_time(name: str, default: str) -> time:
 class Config:
     symbol: str = "IWM"
 
-    # Robinhood credentials (only needed when --live is passed)
+    # Robinhood credentials for the unofficial robin_stocks client. NOT used
+    # by the default --live path (USE_ROBINHOOD_MCP=true talks only to
+    # Robinhood's official OAuth-based MCP server) -- only needed if you set
+    # USE_ROBINHOOD_MCP=false, which uses robin_stocks for everything.
     rh_username: str = field(default_factory=lambda: os.environ.get("ROBINHOOD_USERNAME", ""))
     rh_password: str = field(default_factory=lambda: os.environ.get("ROBINHOOD_PASSWORD", ""))
     rh_totp_secret: str = field(default_factory=lambda: os.environ.get("ROBINHOOD_TOTP_SECRET", ""))

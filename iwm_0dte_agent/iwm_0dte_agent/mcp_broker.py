@@ -24,9 +24,19 @@ get_option_quotes for reading a 0DTE chain, and review_option_order ->
 place_option_order for submitting a trade, gated on get_accounts showing
 agentic_allowed=true and option_level_2/3. Schemas for all five tools were
 fetched from a live connection via mcp_probe.py before writing this, not
-guessed. `robin_stocks` (via RobinhoodBroker) remains the fallback only for
-`get_intraday_bars` (underlying price history), which doesn't have a mapped
-MCP equivalent yet.
+guessed.
+
+There's no MCP tool for historical price bars, only a live quote
+(get_equity_quotes) -- so `get_intraday_bars` builds its own bars in
+process (see bar_builder.py) from repeated quote polls rather than falling
+back to `robin_stocks` for ready-made candles. That keeps `--live` mode
+(with USE_ROBINHOOD_MCP=true, the default) entirely off `robin_stocks`: no
+login, no automated calls against it at all -- the ToS risk from
+automating an unofficial client applies only to the USE_ROBINHOOD_MCP=false
+escape hatch (RobinhoodBroker used directly, see broker.py), not to the
+default path. The tradeoff is that the opening range is only as good as
+however long this process has been polling -- start it at or before market
+open, or the first bars of the day simply won't exist yet.
 
 `login()` logs a warning if it spots any newly-discovered tool with
 "option" in its name -- that's exactly how the options surface above was
@@ -48,7 +58,8 @@ from pathlib import Path
 from typing import Any, Sequence
 from urllib.parse import parse_qs, urlparse
 
-from .broker import Broker, RobinhoodBroker
+from .bar_builder import BarBuilder
+from .broker import Broker
 from .config import Config
 from .models import Bar, OptionContract, OptionType, OrderResult
 
@@ -273,12 +284,12 @@ async def _browser_redirect_handler(url: str) -> None:
 
 
 class MCPBroker(Broker):
-    def __init__(self, config: Config, fallback: Broker | None = None):
+    def __init__(self, config: Config):
         self._config = config
-        self._fallback = fallback or RobinhoodBroker(config)
         self._mcp_session: _MCPSession | None = None
         self._account_number: str | None = None
         self._instrument_cache: dict[str, dict] = {}
+        self._bar_builder = BarBuilder()
 
     def list_discovered_tools(self) -> set[str]:
         return set(self._mcp_session.tool_names) if self._mcp_session else set()
@@ -323,7 +334,6 @@ class MCPBroker(Broker):
 
     def login(self) -> None:
         self.connect()
-        self._fallback.login()  # get_intraday_bars still needs robin_stocks directly
 
     def close(self) -> None:
         if self._mcp_session is not None:
@@ -385,10 +395,13 @@ class MCPBroker(Broker):
             raise MCPError(f"Could not find a price for {symbol} in {tool} response: {data}")
         return float(price)
 
-    # --- Broker interface: not yet on MCP, delegate to robin_stocks ---
+    # --- Broker interface: no MCP historical-bars tool exists, so this
+    # samples the live quote each call and accumulates its own bars ---
 
     def get_intraday_bars(self, symbol: str, since: dt.datetime) -> list[Bar]:
-        return self._fallback.get_intraday_bars(symbol, since)
+        price = self.get_underlying_price(symbol)
+        self._bar_builder.add_quote(price, dt.datetime.now())
+        return self._bar_builder.bars_since(since)
 
     # --- Broker interface: options, MCP-backed ---
 

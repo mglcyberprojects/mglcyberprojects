@@ -7,36 +7,6 @@ from iwm_0dte_agent.mcp_broker import MCPBroker, MCPError, _first_present
 from iwm_0dte_agent.models import OptionContract, OptionType, OrderResult
 
 
-class FakeFallback:
-    def __init__(self):
-        self.calls = []
-
-    def login(self):
-        self.calls.append("login")
-
-    def get_buying_power(self):
-        raise NotImplementedError
-
-    def get_underlying_price(self, symbol):
-        raise NotImplementedError
-
-    def get_intraday_bars(self, symbol, since):
-        self.calls.append(("get_intraday_bars", symbol, since))
-        return ["bars"]
-
-    def get_0dte_chain(self, symbol):
-        self.calls.append(("get_0dte_chain", symbol))
-        return ["chain"]
-
-    def get_option_quote(self, contract_id):
-        self.calls.append(("get_option_quote", contract_id))
-        return "quote"
-
-    def submit_order(self, contract, quantity, limit_price, side):
-        self.calls.append(("submit_order", contract, quantity, limit_price, side))
-        return OrderResult(submitted=True, broker_order_id="fake-1", detail="ok")
-
-
 class FakeTool:
     def __init__(self, name, description, input_schema, output_schema):
         self.name = name
@@ -56,10 +26,8 @@ class FakeMCPSession:
         self.tools = tools or []
 
 
-def make_broker() -> tuple[MCPBroker, FakeFallback]:
-    fallback = FakeFallback()
-    broker = MCPBroker(Config(), fallback=fallback)
-    return broker, fallback
+def make_broker() -> MCPBroker:
+    return MCPBroker(Config())
 
 
 def test_first_present_returns_first_matching_key():
@@ -69,20 +37,20 @@ def test_first_present_returns_first_matching_key():
 
 
 def test_pick_tool_returns_first_available_candidate():
-    broker, _ = make_broker()
+    broker = make_broker()
     broker._mcp_session = FakeMCPSession({"get_accounts", "get_equity_quotes"})
     assert broker._pick_tool("get_portfolio", "get_accounts") == "get_accounts"
 
 
 def test_pick_tool_raises_when_nothing_matches():
-    broker, _ = make_broker()
+    broker = make_broker()
     broker._mcp_session = FakeMCPSession({"search"})
     with pytest.raises(MCPError):
         broker._pick_tool("get_portfolio", "get_accounts")
 
 
 def test_get_buying_power_resolves_account_then_reads_nested_field():
-    broker, _ = make_broker()
+    broker = make_broker()
     call_tool = FakeCallTool({
         "get_accounts": _account_setup(),
         "get_portfolio": lambda args: {
@@ -97,7 +65,7 @@ def test_get_buying_power_resolves_account_then_reads_nested_field():
 
 
 def test_get_buying_power_raises_when_unparseable():
-    broker, _ = make_broker()
+    broker = make_broker()
     broker._call_tool_sync = FakeCallTool({
         "get_accounts": _account_setup(),
         "get_portfolio": {"data": {"unexpected": "shape"}},
@@ -107,7 +75,7 @@ def test_get_buying_power_raises_when_unparseable():
 
 
 def test_get_buying_power_raises_when_no_eligible_account():
-    broker, _ = make_broker()
+    broker = make_broker()
     broker._call_tool_sync = FakeCallTool({
         "get_accounts": {"data": {"accounts": []}},
     })
@@ -116,27 +84,33 @@ def test_get_buying_power_raises_when_no_eligible_account():
 
 
 def test_get_underlying_price_parses_quotes_list():
-    broker, _ = make_broker()
+    broker = make_broker()
     broker._mcp_session = FakeMCPSession({"get_equity_quotes"})
     broker._call_tool_sync = lambda name, args: {"quotes": [{"last_trade_price": "201.5"}]}
     assert broker.get_underlying_price("IWM") == 201.5
 
 
 def test_get_underlying_price_raises_when_unparseable():
-    broker, _ = make_broker()
+    broker = make_broker()
     broker._mcp_session = FakeMCPSession({"get_equity_quotes"})
     broker._call_tool_sync = lambda name, args: {"quotes": [{}]}
     with pytest.raises(MCPError):
         broker.get_underlying_price("IWM")
 
 
-def test_get_intraday_bars_delegates_to_fallback():
-    broker, fallback = make_broker()
-    since = dt.datetime(2024, 1, 2, 9, 30)
+def test_get_intraday_bars_samples_quote_and_returns_accumulated_bars():
+    # No MCP historical-bars tool exists, so this polls the live quote
+    # (like get_underlying_price does) and accumulates its own bars rather
+    # than delegating to robin_stocks.
+    broker = make_broker()
+    broker._mcp_session = FakeMCPSession({"get_equity_quotes"})
+    broker._call_tool_sync = lambda name, args: {"quotes": [{"last_trade_price": "201.5"}]}
 
-    broker.get_intraday_bars("IWM", since)
+    since = dt.datetime.now() - dt.timedelta(hours=1)
+    bars = broker.get_intraday_bars("IWM", since)
 
-    assert ("get_intraday_bars", "IWM", since) in fallback.calls
+    assert len(bars) == 1
+    assert bars[0].close == 201.5
 
 
 class FakeCallTool:
@@ -160,7 +134,7 @@ TODAY = dt.date.today().isoformat()
 
 
 def test_get_0dte_chain_builds_contracts_from_chain_instruments_and_quotes():
-    broker, _ = make_broker()
+    broker = make_broker()
     call_tool = FakeCallTool({
         "get_option_chains": {"data": {"chains": [
             {"id": "chain-1", "expiration_dates": [TODAY], "can_open_position": True},
@@ -188,7 +162,7 @@ def test_get_0dte_chain_builds_contracts_from_chain_instruments_and_quotes():
 
 
 def test_get_0dte_chain_returns_empty_when_no_chain_matches_today():
-    broker, _ = make_broker()
+    broker = make_broker()
     broker._call_tool_sync = FakeCallTool({
         "get_option_chains": {"data": {"chains": [
             {"id": "chain-1", "expiration_dates": ["2099-01-01"], "can_open_position": True},
@@ -198,7 +172,7 @@ def test_get_0dte_chain_returns_empty_when_no_chain_matches_today():
 
 
 def test_get_0dte_chain_paginates_instruments():
-    broker, _ = make_broker()
+    broker = make_broker()
 
     def instruments_page(args):
         if "cursor" not in args:
@@ -229,7 +203,7 @@ def test_get_0dte_chain_paginates_instruments():
 
 
 def test_get_option_quote_uses_cache_when_available():
-    broker, _ = make_broker()
+    broker = make_broker()
     broker._instrument_cache["instr-1"] = {
         "id": "instr-1", "chain_symbol": "IWM", "expiration_date": TODAY, "strike_price": "200.0", "type": "call",
     }
@@ -247,7 +221,7 @@ def test_get_option_quote_uses_cache_when_available():
 
 
 def test_get_option_quote_fetches_instrument_when_not_cached():
-    broker, _ = make_broker()
+    broker = make_broker()
     call_tool = FakeCallTool({
         "get_option_instruments": {"data": {"instruments": [
             {"id": "instr-1", "chain_symbol": "IWM", "expiration_date": TODAY, "strike_price": "200.0", "type": "call"},
@@ -264,7 +238,7 @@ def test_get_option_quote_fetches_instrument_when_not_cached():
 
 
 def test_get_option_quote_raises_when_instrument_not_found():
-    broker, _ = make_broker()
+    broker = make_broker()
     broker._call_tool_sync = FakeCallTool({
         "get_option_instruments": {"data": {"instruments": []}},
     })
@@ -273,7 +247,7 @@ def test_get_option_quote_raises_when_instrument_not_found():
 
 
 def test_resolve_account_number_prefers_default_among_eligible():
-    broker, _ = make_broker()
+    broker = make_broker()
     broker._call_tool_sync = FakeCallTool({
         "get_accounts": {"data": {"accounts": [
             {"account_number": "AAA", "agentic_allowed": False, "option_level": "option_level_2", "state": "active", "deactivated": False, "permanently_deactivated": False, "is_default": False},
@@ -285,7 +259,7 @@ def test_resolve_account_number_prefers_default_among_eligible():
 
 
 def test_resolve_account_number_raises_when_none_eligible():
-    broker, _ = make_broker()
+    broker = make_broker()
     broker._call_tool_sync = FakeCallTool({
         "get_accounts": {"data": {"accounts": [
             {"account_number": "AAA", "agentic_allowed": False, "option_level": "option_level_2", "state": "active", "deactivated": False, "permanently_deactivated": False, "is_default": True},
@@ -296,7 +270,7 @@ def test_resolve_account_number_raises_when_none_eligible():
 
 
 def test_resolve_account_number_is_cached():
-    broker, _ = make_broker()
+    broker = make_broker()
     call_tool = FakeCallTool({
         "get_accounts": {"data": {"accounts": [
             {"account_number": "AAA", "agentic_allowed": True, "option_level": "option_level_2", "state": "active", "deactivated": False, "permanently_deactivated": False, "is_default": True},
@@ -326,7 +300,7 @@ def _account_setup():
 
 
 def test_submit_order_places_after_clean_review():
-    broker, _ = make_broker()
+    broker = make_broker()
     contract = OptionContract("IWM", 200.0, OptionType.CALL, TODAY, 1.0, 1.1, 1.05, "instr-1")
     call_tool = FakeCallTool({
         "get_accounts": _account_setup(),
@@ -345,7 +319,7 @@ def test_submit_order_places_after_clean_review():
 
 
 def test_submit_order_uses_close_position_effect_when_selling():
-    broker, _ = make_broker()
+    broker = make_broker()
     contract = OptionContract("IWM", 200.0, OptionType.CALL, TODAY, 1.0, 1.1, 1.05, "instr-1")
     call_tool = FakeCallTool({
         "get_accounts": _account_setup(),
@@ -361,7 +335,7 @@ def test_submit_order_uses_close_position_effect_when_selling():
 
 
 def test_submit_order_declines_when_order_checks_present():
-    broker, _ = make_broker()
+    broker = make_broker()
     contract = OptionContract("IWM", 200.0, OptionType.CALL, TODAY, 1.0, 1.1, 1.05, "instr-1")
     call_tool = FakeCallTool({
         "get_accounts": _account_setup(),
@@ -377,7 +351,7 @@ def test_submit_order_declines_when_order_checks_present():
 
 
 def test_submit_order_fails_cleanly_when_no_eligible_account():
-    broker, _ = make_broker()
+    broker = make_broker()
     contract = OptionContract("IWM", 200.0, OptionType.CALL, TODAY, 1.0, 1.1, 1.05, "instr-1")
     call_tool = FakeCallTool({
         "get_accounts": {"data": {"accounts": []}},
@@ -390,24 +364,23 @@ def test_submit_order_fails_cleanly_when_no_eligible_account():
     assert all(name not in ("review_option_order", "place_option_order") for name, _ in call_tool.calls)
 
 
-def test_login_connects_then_logs_into_fallback():
-    broker, fallback = make_broker()
+def test_login_only_connects_to_mcp_no_robin_stocks_involved():
+    broker = make_broker()
     broker.connect = lambda: setattr(broker, "_mcp_session", FakeMCPSession({"get_accounts"}))
 
     broker.login()
 
     assert "get_accounts" in broker.list_discovered_tools()
-    assert "login" in fallback.calls
 
 
 def test_call_tool_sync_raises_when_not_connected():
-    broker, _ = make_broker()
+    broker = make_broker()
     with pytest.raises(MCPError):
         broker._call_tool_sync("get_portfolio", {})
 
 
 def test_describe_tool_returns_schema_for_known_tool():
-    broker, _ = make_broker()
+    broker = make_broker()
     tool = FakeTool(
         name="get_option_chains", description="Get option chains for a symbol",
         input_schema={"type": "object", "properties": {"symbol": {"type": "string"}}},
@@ -422,11 +395,11 @@ def test_describe_tool_returns_schema_for_known_tool():
 
 
 def test_describe_tool_returns_none_for_unknown_tool():
-    broker, _ = make_broker()
+    broker = make_broker()
     broker._mcp_session = FakeMCPSession({"get_accounts"}, tools=[])
     assert broker.describe_tool("does_not_exist") is None
 
 
 def test_describe_tool_returns_none_when_not_connected():
-    broker, _ = make_broker()
+    broker = make_broker()
     assert broker.describe_tool("get_accounts") is None
