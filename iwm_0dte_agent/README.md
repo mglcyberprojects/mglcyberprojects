@@ -156,14 +156,32 @@ prints every tool the server currently exposes. If you see anything with
 "option" in the name, the agent will also log a warning about it on
 `--live` startup — that's your sign options support may have landed, and
 worth asking to have wired into `mcp_broker.py`'s `MCPBroker` so order
-placement moves off `robin_stocks` too.
+placement moves off `robin_stocks` too. (As of an August 2026 connection,
+it has: `get_option_chains`, `get_option_quotes`, `place_option_order`,
+`review_option_order`, `cancel_option_order`, and more are live — options
+order placement just isn't wired into `MCPBroker` yet.)
 
-**This integration has not been exercised against the live server.** It's
-written against the real `mcp` Python SDK's client API (verified by
-inspecting the installed package) and Robinhood's publicly documented OAuth
-+ MCP setup, but the sandbox this was built in has no network access to
-`robinhood.com`, so the OAuth handshake and exact tool response shapes are
-unconfirmed. If `--list-mcp-tools` or `--live` fails during the MCP step:
+To inspect a specific tool's real request/response shape before wiring it
+in (rather than guessing), use `mcp_probe.py`:
+
+```bash
+# Safe on anything, including order-placement tools -- reads the schema
+# the server declares, never actually calls the tool:
+python -m iwm_0dte_agent.mcp_probe describe get_option_chains
+
+# Actually invokes the tool and prints the raw response. Fine for
+# read-only tools; requires a second confirmation for anything that can
+# place/cancel/modify an order or exercise a position:
+python -m iwm_0dte_agent.mcp_probe call get_option_chains '{"symbol": "IWM"}'
+```
+
+This integration was originally written and unit-tested without network
+access to `robinhood.com`, so the OAuth handshake, connection lifecycle,
+and tool discovery are now confirmed working against the live server —
+the exact request/response shapes for individual tools (beyond the two
+already wired up, `get_portfolio`/`get_equity_quotes`) are still
+best-effort. If `--list-mcp-tools`, `mcp_probe.py`, or `--live` fails
+during the MCP step:
 
 - The OAuth flow opens `http://127.0.0.1:8765/callback` (configurable via
   `ROBINHOOD_MCP_OAUTH_PORT`) to catch the redirect — make sure nothing else
@@ -314,6 +332,7 @@ iwm_0dte_agent/
   models.py             # shared dataclasses (Bar, OptionContract, TradeSignal, ...)
   broker.py             # Broker interface + live Robinhood implementation (robin_stocks)
   mcp_broker.py         # Robinhood's official MCP server for account/equity data, robin_stocks fallback for options
+  mcp_probe.py          # CLI to inspect a Robinhood MCP tool's schema/response before wiring it into MCPBroker
   market_data.py        # yfinance download + DataFrame-to-Bar conversion, shared by paper broker + backtester
   paper_broker.py       # simulated broker for --dry-run (default)
   pricing.py            # Black-Scholes pricer + synthetic chain/quote builders (paper broker + backtester)

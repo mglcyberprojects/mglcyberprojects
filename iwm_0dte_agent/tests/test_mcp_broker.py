@@ -37,13 +37,23 @@ class FakeFallback:
         return OrderResult(submitted=True, broker_order_id="fake-1", detail="ok")
 
 
-class FakeMCPSession:
-    """Stands in for the real _MCPSession -- only tool_names is read by the
-    code paths these tests exercise (_pick_tool / the presence check in
-    _call_tool_sync, which itself is monkeypatched away in most tests)."""
+class FakeTool:
+    def __init__(self, name, description, input_schema, output_schema):
+        self.name = name
+        self.description = description
+        self.input_schema = input_schema
+        self.output_schema = output_schema
 
-    def __init__(self, tool_names: set[str]):
+
+class FakeMCPSession:
+    """Stands in for the real _MCPSession -- only tool_names/tools are read
+    by the code paths these tests exercise (_pick_tool / describe_tool /
+    the presence check in _call_tool_sync, which itself is monkeypatched
+    away in most tests)."""
+
+    def __init__(self, tool_names: set[str], tools: list | None = None):
         self.tool_names = tool_names
+        self.tools = tools or []
 
 
 def make_broker() -> tuple[MCPBroker, FakeFallback]:
@@ -139,3 +149,29 @@ def test_call_tool_sync_raises_when_not_connected():
     broker, _ = make_broker()
     with pytest.raises(MCPError):
         broker._call_tool_sync("get_portfolio", {})
+
+
+def test_describe_tool_returns_schema_for_known_tool():
+    broker, _ = make_broker()
+    tool = FakeTool(
+        name="get_option_chains", description="Get option chains for a symbol",
+        input_schema={"type": "object", "properties": {"symbol": {"type": "string"}}},
+        output_schema={"type": "object"},
+    )
+    broker._mcp_session = FakeMCPSession({"get_option_chains"}, tools=[tool])
+
+    info = broker.describe_tool("get_option_chains")
+
+    assert info["description"] == "Get option chains for a symbol"
+    assert info["input_schema"]["properties"]["symbol"]["type"] == "string"
+
+
+def test_describe_tool_returns_none_for_unknown_tool():
+    broker, _ = make_broker()
+    broker._mcp_session = FakeMCPSession({"get_accounts"}, tools=[])
+    assert broker.describe_tool("does_not_exist") is None
+
+
+def test_describe_tool_returns_none_when_not_connected():
+    broker, _ = make_broker()
+    assert broker.describe_tool("get_accounts") is None

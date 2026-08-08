@@ -17,14 +17,18 @@ returned by get_portfolio/get_equity_quotes/etc. are still best-effort,
 though -- see README.md's "Troubleshooting the MCP connection" section, and
 treat any `MCPError` you hit as useful information to report back.
 
-As of mid-2026, Robinhood's MCP server exposes read/account/equity-order
-tools (get_accounts, get_portfolio, get_equity_quotes, place_equity_order,
-etc.) but no confirmed options tools. This client is deliberately narrow: it
-only relies on MCP for account/underlying-price data. Everything
+As of a live connection in August 2026, Robinhood's MCP server exposes 54
+tools including a full options surface: get_option_chains, get_option_quotes,
+place_option_order, review_option_order, cancel_option_order,
+get_option_positions, get_option_orders, and more. This client still only
+relies on MCP for account/underlying-price data, though -- everything
 options-related (0DTE chain lookup, option quotes, order placement) still
-goes through the robin_stocks-based RobinhoodBroker. `login()` logs a
-warning if it spots any newly-discovered tool with "option" in its name, so
-a future run makes it obvious when Robinhood ships that surface.
+goes through the robin_stocks-based RobinhoodBroker for now, pending
+mapping the real request/response shapes of those option tools (see
+mcp_probe.py) and wiring them in deliberately rather than guessing.
+`login()` logs a warning if it spots any newly-discovered tool with
+"option" in its name, which is exactly how the options surface above was
+first noticed.
 """
 
 from __future__ import annotations
@@ -87,6 +91,7 @@ class _MCPSession:
         self._ready = threading.Event()
         self._connect_error: BaseException | None = None
         self.tool_names: set[str] = set()
+        self.tools: list = []  # full mcp.types.Tool objects: name/description/input_schema/output_schema
 
     def connect(self) -> None:
         self._main_future = asyncio.run_coroutine_threadsafe(self._main(), self._loop)
@@ -123,7 +128,8 @@ class _MCPSession:
                     async with ClientSession(read_stream, write_stream) as session:
                         await session.initialize()
                         tools_result = await session.list_tools()
-                        self.tool_names = {t.name for t in tools_result.tools}
+                        self.tools = list(tools_result.tools)
+                        self.tool_names = {t.name for t in self.tools}
                         self._ready.set()
 
                         while True:
@@ -268,6 +274,22 @@ class MCPBroker(Broker):
 
     def list_discovered_tools(self) -> set[str]:
         return set(self._mcp_session.tool_names) if self._mcp_session else set()
+
+    def describe_tool(self, name: str) -> dict | None:
+        """Returns {description, input_schema, output_schema} for a tool as
+        declared by the server itself -- no guessing, no need to actually
+        invoke the tool. None if the name isn't among the discovered tools.
+        """
+        if self._mcp_session is None:
+            return None
+        for tool in self._mcp_session.tools:
+            if tool.name == name:
+                return {
+                    "description": tool.description,
+                    "input_schema": tool.input_schema,
+                    "output_schema": tool.output_schema,
+                }
+        return None
 
     def connect(self) -> None:
         """MCP-only handshake (account/quote data). Does not touch robin_stocks."""
