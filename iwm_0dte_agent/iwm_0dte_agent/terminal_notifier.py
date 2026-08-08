@@ -42,6 +42,8 @@ class TerminalNotifier:
         print(f"  Est. cost:       ${order.limit_price * order.quantity * 100:.2f}")
         print(f"  Stop loss:       ${order.stop_loss_price:.2f}")
         print(f"  Profit target:   ${order.profit_target_price:.2f}")
+        if order.entry_price is not None:
+            print(f"  P&L:             {order.pnl_pct:+.1f}% (${order.pnl_dollars:+.2f})")
         print(f"  Reason:          {order.reason}")
         print("=" * 60)
         answer = input("Submit this order? [y/N]: ").strip().lower()

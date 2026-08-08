@@ -209,7 +209,7 @@ def _try_close_position(
     proposed = ProposedOrder(
         contract=quote, quantity=position.quantity, limit_price=quote.bid,
         stop_loss_price=position.stop_loss_price, profit_target_price=position.profit_target_price,
-        reason=reason,
+        reason=reason, entry_price=position.entry_price,
     )
     trade_log.write(
         "proposed_close", symbol=quote.symbol, option_type=quote.option_type.value,
@@ -226,7 +226,8 @@ def _try_close_position(
         return False
 
     result = broker.submit_order(position.contract, position.quantity, quote.bid, side="sell")
-    pnl = (quote.bid - position.entry_price) * position.quantity * 100
+    pnl = proposed.pnl_dollars
+    pnl_pct = proposed.pnl_pct
     trade_log.write(
         "filled_close" if result.submitted else "failed_close",
         symbol=quote.symbol, option_type=quote.option_type.value, strike=quote.strike,
@@ -237,7 +238,7 @@ def _try_close_position(
         risk.record_trade_closed(pnl)
         notifier.alert(
             f"Closed ({reason}): SELL {position.quantity}x {quote.option_type.value.upper()} "
-            f"{quote.symbol} ${quote.strike:g} @ ${quote.bid:.2f} -- P&L ${pnl:.2f}"
+            f"{quote.symbol} ${quote.strike:g} @ ${quote.bid:.2f} -- P&L ${pnl:+.2f} ({pnl_pct:+.1f}%)"
         )
     else:
         notifier.alert(f"Close order FAILED ({reason}) -- {result.detail}")

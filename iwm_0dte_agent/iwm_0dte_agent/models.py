@@ -58,6 +58,22 @@ class ProposedOrder:
     stop_loss_price: float
     profit_target_price: float
     reason: str
+    # Set only when this proposal closes an existing position (the price it
+    # was originally opened at), so a confirm() UI can show % gain/loss.
+    # None for entry proposals, where there's nothing yet to compare against.
+    entry_price: float | None = None
+
+    @property
+    def pnl_pct(self) -> float | None:
+        if self.entry_price is None:
+            return None
+        return (self.limit_price - self.entry_price) / self.entry_price * 100
+
+    @property
+    def pnl_dollars(self) -> float | None:
+        if self.entry_price is None:
+            return None
+        return (self.limit_price - self.entry_price) * self.quantity * 100
 
 
 @dataclass

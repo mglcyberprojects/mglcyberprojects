@@ -100,6 +100,11 @@ class TelegramNotifier:
         direction_icon = "📈" if order.contract.option_type == OptionType.CALL else "📉"
         nonce = uuid.uuid4().hex[:10]
         minutes = max(1, self._timeout_seconds // 60)
+        pnl_line = ""
+        if order.entry_price is not None:
+            pnl_icon = "🟢" if order.pnl_dollars >= 0 else "🔴"
+            pnl_line = f"{pnl_icon} P&L: <b>{order.pnl_pct:+.1f}%</b> (${order.pnl_dollars:+.2f})\n"
+
         # HTML parse_mode below -- every dynamic value must be escaped, since
         # strategy/risk reason strings routinely contain literal "<=" / ">="
         # (e.g. "stop loss hit (bid 1.05 <= 1.05)") that would otherwise be
@@ -112,7 +117,8 @@ class TelegramNotifier:
             f"Limit: <b>${order.limit_price:.2f}</b> (bid ${order.contract.bid:.2f} / ask ${order.contract.ask:.2f})\n"
             f"Est. cost: <b>${order.limit_price * order.quantity * 100:.2f}</b>\n"
             f"Stop loss: ${order.stop_loss_price:.2f}\n"
-            f"Profit target: ${order.profit_target_price:.2f}\n\n"
+            f"Profit target: ${order.profit_target_price:.2f}\n"
+            f"{pnl_line}\n"
             f"💬 <i>{_esc(order.reason)}</i>\n\n"
             f"⏱ No response in {minutes} min → treated as decline"
         )

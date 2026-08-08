@@ -42,11 +42,15 @@ def test_alert_prefixes_icon_and_sends_plain_text_no_parse_mode():
     assert "parse_mode" not in params
 
 
-def _make_order(option_type=OptionType.CALL, reason="close 228.45 broke above ORB high 228.10"):
-    contract = OptionContract("IWM", 228.0, option_type, "2026-08-10", 2.00, 2.10, 2.05, "instr-1")
+def _make_order(
+    option_type=OptionType.CALL, reason="close 228.45 broke above ORB high 228.10",
+    entry_price=None, limit_price=2.10, quantity=3,
+):
+    contract = OptionContract("IWM", 228.0, option_type, "2026-08-10", 2.00, limit_price, 2.05, "instr-1")
     return ProposedOrder(
-        contract=contract, quantity=3, limit_price=2.10,
+        contract=contract, quantity=quantity, limit_price=limit_price,
         stop_loss_price=1.05, profit_target_price=4.20, reason=reason,
+        entry_price=entry_price,
     )
 
 
@@ -97,6 +101,47 @@ def test_confirm_escapes_html_sensitive_reason_text():
     assert "<=" not in params["text"].replace("&lt;=", "")  # raw "<=" must not survive unescaped
     assert "&lt;=" in params["text"]
     assert "stop loss hit (bid 1.05" in params["text"]
+
+
+def test_confirm_entry_proposal_shows_no_pnl_line():
+    # Entry proposals have no entry_price to compare against -- nothing to show.
+    notifier = make_notifier()
+    fake_call = FakeCall()
+    notifier._call = fake_call
+    notifier._await_response = lambda nonce, message_id: True
+
+    notifier.confirm(_make_order(entry_price=None), live=True)
+
+    _, params = fake_call.calls[0]
+    assert "P&L" not in params["text"]
+
+
+def test_confirm_close_proposal_shows_gain_with_green_icon():
+    notifier = make_notifier()
+    fake_call = FakeCall()
+    notifier._call = fake_call
+    notifier._await_response = lambda nonce, message_id: True
+
+    # Entered at $2.10, closing at $4.25 -> +102.4%, +$645.00 on 3 contracts.
+    order = _make_order(entry_price=2.10, limit_price=4.25, reason="profit target hit (bid 4.25 >= 4.20)")
+    notifier.confirm(order, live=True)
+
+    _, params = fake_call.calls[0]
+    assert "🟢 P&L: <b>+102.4%</b> ($+645.00)" in params["text"]
+
+
+def test_confirm_close_proposal_shows_loss_with_red_icon():
+    notifier = make_notifier()
+    fake_call = FakeCall()
+    notifier._call = fake_call
+    notifier._await_response = lambda nonce, message_id: True
+
+    # Entered at $1.35, closing at $0.65 -> -51.9%, -$280.00 on 4 contracts.
+    order = _make_order(entry_price=1.35, limit_price=0.65, quantity=4, reason="stop loss hit (bid 0.65 <= 0.68)")
+    notifier.confirm(order, live=True)
+
+    _, params = fake_call.calls[0]
+    assert "🔴 P&L: <b>-51.9%</b> ($-280.00)" in params["text"]
 
 
 def test_request_zones_sends_html_prompt_then_waits():
