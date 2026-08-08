@@ -37,6 +37,15 @@ class FakeFallback:
         return OrderResult(submitted=True, broker_order_id="fake-1", detail="ok")
 
 
+class FakeMCPSession:
+    """Stands in for the real _MCPSession -- only tool_names is read by the
+    code paths these tests exercise (_pick_tool / the presence check in
+    _call_tool_sync, which itself is monkeypatched away in most tests)."""
+
+    def __init__(self, tool_names: set[str]):
+        self.tool_names = tool_names
+
+
 def make_broker() -> tuple[MCPBroker, FakeFallback]:
     fallback = FakeFallback()
     broker = MCPBroker(Config(), fallback=fallback)
@@ -51,34 +60,34 @@ def test_first_present_returns_first_matching_key():
 
 def test_pick_tool_returns_first_available_candidate():
     broker, _ = make_broker()
-    broker._tool_names = {"get_accounts", "get_equity_quotes"}
+    broker._mcp_session = FakeMCPSession({"get_accounts", "get_equity_quotes"})
     assert broker._pick_tool("get_portfolio", "get_accounts") == "get_accounts"
 
 
 def test_pick_tool_raises_when_nothing_matches():
     broker, _ = make_broker()
-    broker._tool_names = {"search"}
+    broker._mcp_session = FakeMCPSession({"search"})
     with pytest.raises(MCPError):
         broker._pick_tool("get_portfolio", "get_accounts")
 
 
 def test_get_buying_power_parses_top_level_field():
     broker, _ = make_broker()
-    broker._tool_names = {"get_portfolio"}
+    broker._mcp_session = FakeMCPSession({"get_portfolio"})
     broker._call_tool_sync = lambda name, args: {"buying_power": "1234.56"}
     assert broker.get_buying_power() == 1234.56
 
 
 def test_get_buying_power_falls_back_to_accounts_list():
     broker, _ = make_broker()
-    broker._tool_names = {"get_accounts"}
+    broker._mcp_session = FakeMCPSession({"get_accounts"})
     broker._call_tool_sync = lambda name, args: {"accounts": [{"buyingPower": 500.0}]}
     assert broker.get_buying_power() == 500.0
 
 
 def test_get_buying_power_raises_when_unparseable():
     broker, _ = make_broker()
-    broker._tool_names = {"get_portfolio"}
+    broker._mcp_session = FakeMCPSession({"get_portfolio"})
     broker._call_tool_sync = lambda name, args: {"unexpected": "shape"}
     with pytest.raises(MCPError):
         broker.get_buying_power()
@@ -86,14 +95,14 @@ def test_get_buying_power_raises_when_unparseable():
 
 def test_get_underlying_price_parses_quotes_list():
     broker, _ = make_broker()
-    broker._tool_names = {"get_equity_quotes"}
+    broker._mcp_session = FakeMCPSession({"get_equity_quotes"})
     broker._call_tool_sync = lambda name, args: {"quotes": [{"last_trade_price": "201.5"}]}
     assert broker.get_underlying_price("IWM") == 201.5
 
 
 def test_get_underlying_price_raises_when_unparseable():
     broker, _ = make_broker()
-    broker._tool_names = {"get_equity_quotes"}
+    broker._mcp_session = FakeMCPSession({"get_equity_quotes"})
     broker._call_tool_sync = lambda name, args: {"quotes": [{}]}
     with pytest.raises(MCPError):
         broker.get_underlying_price("IWM")
@@ -118,9 +127,15 @@ def test_options_related_methods_delegate_to_fallback():
 
 def test_login_connects_then_logs_into_fallback():
     broker, fallback = make_broker()
-    broker.connect = lambda: broker._tool_names.add("get_accounts")
+    broker.connect = lambda: setattr(broker, "_mcp_session", FakeMCPSession({"get_accounts"}))
 
     broker.login()
 
-    assert "get_accounts" in broker._tool_names
+    assert "get_accounts" in broker.list_discovered_tools()
     assert "login" in fallback.calls
+
+
+def test_call_tool_sync_raises_when_not_connected():
+    broker, _ = make_broker()
+    with pytest.raises(MCPError):
+        broker._call_tool_sync("get_portfolio", {})

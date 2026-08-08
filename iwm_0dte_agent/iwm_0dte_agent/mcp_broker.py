@@ -2,17 +2,20 @@
 (https://agent.robinhood.com/mcp/trading), used for --live mode when
 `USE_ROBINHOOD_MCP=true` (the default).
 
-*** UNVERIFIED AGAINST THE LIVE SERVER ***
-This module is written against the `mcp` Python SDK's actual client API
-(confirmed by inspecting the installed `mcp==2.0.0` package: `OAuthClientProvider`,
-`streamable_http_client`, `ClientSession`, `create_mcp_http_client`) and against
-Robinhood's publicly described OAuth + MCP integration. It has NOT been
-exercised against the real `agent.robinhood.com` endpoint -- this development
-sandbox's network egress to robinhood.com is blocked, so the OAuth handshake
-and the exact tool names/argument shapes below are best-effort, not confirmed.
-Expect to debug the first real connection. See README.md's "Troubleshooting
-the MCP connection" section, and treat any `MCPError` you hit as useful
-information to report back rather than a sign the whole approach is broken.
+This module was originally written and unit-tested without network access to
+agent.robinhood.com (the dev sandbox it was built in blocks that egress), so
+the first real run against the live server is what actually exercises the
+OAuth handshake and connection lifecycle. That first run got through OAuth
+and tool discovery successfully, then hit a real bug on close(): spawning a
+fresh asyncio Task per call (via run_coroutine_threadsafe) broke anyio's
+requirement that a cancel scope be exited by the same task that entered it,
+raising "Attempted to exit cancel scope in a different task than it was
+entered in". Fixed by running the whole connection lifetime -- connect,
+every tool call, and close -- inside one persistent task (`_MCPSession`),
+with work fed in through a queue. The exact tool names/argument shapes
+returned by get_portfolio/get_equity_quotes/etc. are still best-effort,
+though -- see README.md's "Troubleshooting the MCP connection" section, and
+treat any `MCPError` you hit as useful information to report back.
 
 As of mid-2026, Robinhood's MCP server exposes read/account/equity-order
 tools (get_accounts, get_portfolio, get_equity_quotes, place_equity_order,
@@ -32,7 +35,6 @@ import json
 import logging
 import threading
 import webbrowser
-from contextlib import AsyncExitStack
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import Any, Sequence
@@ -56,22 +58,111 @@ def _first_present(data: dict, *keys: str) -> Any | None:
     return None
 
 
-class _AsyncBridge:
-    """Runs a persistent asyncio event loop in a background thread so the
-    rest of this (synchronous) project can call into the async `mcp` SDK
-    without being rewritten around asyncio itself.
+_SHUTDOWN = object()
+
+
+class _MCPSession:
+    """Owns the MCP connection's entire async lifetime as a single asyncio
+    Task in a background thread.
+
+    `anyio` (used internally by the `mcp` SDK's streamable HTTP transport)
+    ties its cancel scopes to whichever *task* entered them, and requires
+    that same task to exit them. A naive bridge that runs each call via
+    `asyncio.run_coroutine_threadsafe` spawns a fresh Task per call --
+    connecting in one task and closing in another -- which trips exactly
+    that check with "Attempted to exit cancel scope in a different task
+    than it was entered in". Everything here (connect, every tool call,
+    and close) instead runs inside one persistent coroutine, with work fed
+    in through a queue so the sync rest of this project can still call it
+    like a normal blocking client.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, config: Config) -> None:
+        self._config = config
         self._loop = asyncio.new_event_loop()
         self._thread = threading.Thread(target=self._loop.run_forever, daemon=True)
         self._thread.start()
+        self._queue: asyncio.Queue | None = None
+        self._main_future: "asyncio.Future | None" = None
+        self._ready = threading.Event()
+        self._connect_error: BaseException | None = None
+        self.tool_names: set[str] = set()
 
-    def run(self, coro, timeout: float | None = None):
-        future = asyncio.run_coroutine_threadsafe(coro, self._loop)
-        return future.result(timeout=timeout)
+    def connect(self) -> None:
+        self._main_future = asyncio.run_coroutine_threadsafe(self._main(), self._loop)
+        self._ready.wait()
+        if self._connect_error is not None:
+            raise self._connect_error
 
-    def close(self) -> None:
+    async def _main(self) -> None:
+        from mcp.client.auth import OAuthClientProvider
+        from mcp.client.session import ClientSession
+        from mcp.client.streamable_http import create_mcp_http_client, streamable_http_client
+        from mcp.shared.auth import OAuthClientMetadata
+
+        self._queue = asyncio.Queue()
+        try:
+            client_metadata = OAuthClientMetadata(
+                client_name="IWM 0DTE Agent",
+                redirect_uris=[f"http://127.0.0.1:{self._config.robinhood_mcp_oauth_port}/callback"],
+                grant_types=["authorization_code", "refresh_token"],
+                response_types=["code"],
+            )
+            oauth = OAuthClientProvider(
+                server_url=self._config.robinhood_mcp_url,
+                client_metadata=client_metadata,
+                storage=FileTokenStorage(self._config.robinhood_mcp_token_cache_path),
+                redirect_handler=_browser_redirect_handler,
+                callback_handler=lambda: _await_oauth_callback(self._config.robinhood_mcp_oauth_port),
+            )
+
+            async with create_mcp_http_client(auth=oauth) as http_client:
+                async with streamable_http_client(
+                    self._config.robinhood_mcp_url, http_client=http_client
+                ) as (read_stream, write_stream):
+                    async with ClientSession(read_stream, write_stream) as session:
+                        await session.initialize()
+                        tools_result = await session.list_tools()
+                        self.tool_names = {t.name for t in tools_result.tools}
+                        self._ready.set()
+
+                        while True:
+                            item = await self._queue.get()
+                            if item is _SHUTDOWN:
+                                return
+                            name, arguments, result_holder, done_event = item
+                            try:
+                                result_holder["result"] = await session.call_tool(name, arguments)
+                            except BaseException as exc:  # noqa: BLE001 -- surfaced to the calling thread
+                                result_holder["error"] = exc
+                            finally:
+                                done_event.set()
+        except BaseException as exc:  # noqa: BLE001 -- surfaced to the calling thread via connect()
+            self._connect_error = exc
+            self._ready.set()
+
+    def call_tool(self, name: str, arguments: dict, timeout: float = 30.0):
+        if self._queue is None:
+            raise MCPError("Not connected to the MCP server -- call connect()/login() first")
+        result_holder: dict = {}
+        done_event = threading.Event()
+        self._loop.call_soon_threadsafe(
+            self._queue.put_nowait, (name, arguments, result_holder, done_event)
+        )
+        if not done_event.wait(timeout=timeout):
+            raise MCPError(f"Timed out waiting for MCP tool {name!r} to respond")
+        if "error" in result_holder:
+            raise result_holder["error"]
+        return result_holder["result"]
+
+    def close(self, timeout: float = 30.0) -> None:
+        if self._queue is not None:
+            self._loop.call_soon_threadsafe(self._queue.put_nowait, _SHUTDOWN)
+        if self._main_future is not None:
+            try:
+                self._main_future.result(timeout=timeout)
+            except Exception:
+                logger.exception("Error while closing the MCP session")
         self._loop.call_soon_threadsafe(self._loop.stop)
         self._thread.join(timeout=5)
 
@@ -173,22 +264,21 @@ class MCPBroker(Broker):
     def __init__(self, config: Config, fallback: Broker | None = None):
         self._config = config
         self._fallback = fallback or RobinhoodBroker(config)
-        self._bridge = _AsyncBridge()
-        self._exit_stack: AsyncExitStack | None = None
-        self._session = None
-        self._tool_names: set[str] = set()
+        self._mcp_session: _MCPSession | None = None
 
     def list_discovered_tools(self) -> set[str]:
-        return set(self._tool_names)
+        return set(self._mcp_session.tool_names) if self._mcp_session else set()
 
     def connect(self) -> None:
         """MCP-only handshake (account/quote data). Does not touch robin_stocks."""
-        self._bridge.run(self._connect())
+        self._mcp_session = _MCPSession(self._config)
+        self._mcp_session.connect()
+        tool_names = self._mcp_session.tool_names
         logger.info(
             "Connected to Robinhood MCP (%s), discovered %d tools: %s",
-            self._config.robinhood_mcp_url, len(self._tool_names), sorted(self._tool_names),
+            self._config.robinhood_mcp_url, len(tool_names), sorted(tool_names),
         )
-        option_like = sorted(n for n in self._tool_names if "option" in n.lower())
+        option_like = sorted(n for n in tool_names if "option" in n.lower())
         if option_like:
             logger.warning(
                 "Detected possibly-new option-related MCP tools not yet used by this "
@@ -200,61 +290,26 @@ class MCPBroker(Broker):
         self.connect()
         self._fallback.login()  # options order flow still needs robin_stocks directly
 
-    async def _connect(self) -> None:
-        from mcp.client.auth import OAuthClientProvider
-        from mcp.client.session import ClientSession
-        from mcp.client.streamable_http import create_mcp_http_client, streamable_http_client
-        from mcp.shared.auth import OAuthClientMetadata
-
-        client_metadata = OAuthClientMetadata(
-            client_name="IWM 0DTE Agent",
-            redirect_uris=[f"http://127.0.0.1:{self._config.robinhood_mcp_oauth_port}/callback"],
-            grant_types=["authorization_code", "refresh_token"],
-            response_types=["code"],
-        )
-        oauth = OAuthClientProvider(
-            server_url=self._config.robinhood_mcp_url,
-            client_metadata=client_metadata,
-            storage=FileTokenStorage(self._config.robinhood_mcp_token_cache_path),
-            redirect_handler=_browser_redirect_handler,
-            callback_handler=lambda: _await_oauth_callback(self._config.robinhood_mcp_oauth_port),
-        )
-
-        self._exit_stack = AsyncExitStack()
-        http_client = await self._exit_stack.enter_async_context(create_mcp_http_client(auth=oauth))
-        read_stream, write_stream = await self._exit_stack.enter_async_context(
-            streamable_http_client(self._config.robinhood_mcp_url, http_client=http_client)
-        )
-        session = await self._exit_stack.enter_async_context(ClientSession(read_stream, write_stream))
-        await session.initialize()
-        tools_result = await session.list_tools()
-
-        self._session = session
-        self._tool_names = {t.name for t in tools_result.tools}
-
     def close(self) -> None:
-        if self._exit_stack is not None:
-            self._bridge.run(self._exit_stack.aclose())
-            self._exit_stack = None
-        self._bridge.close()
+        if self._mcp_session is not None:
+            self._mcp_session.close()
+            self._mcp_session = None
 
     def _pick_tool(self, *candidates: str) -> str:
+        tool_names = self._mcp_session.tool_names if self._mcp_session else set()
         for name in candidates:
-            if name in self._tool_names:
+            if name in tool_names:
                 return name
         raise MCPError(
             f"None of the expected MCP tools {candidates} were found on the server "
-            f"(discovered: {sorted(self._tool_names)}). Robinhood may have renamed them "
+            f"(discovered: {sorted(tool_names)}). Robinhood may have renamed them "
             f"-- run `python -m iwm_0dte_agent --list-mcp-tools` to see the current list."
         )
 
     def _call_tool_sync(self, name: str, arguments: dict) -> dict:
-        return self._bridge.run(self._call_tool(name, arguments))
-
-    async def _call_tool(self, name: str, arguments: dict) -> dict:
-        if self._session is None:
+        if self._mcp_session is None:
             raise MCPError("Not connected to the MCP server -- call connect()/login() first")
-        result = await self._session.call_tool(name, arguments)
+        result = self._mcp_session.call_tool(name, arguments)
         if result.is_error:
             raise MCPError(f"MCP tool {name} returned an error: {result.content}")
         if result.structured_content is not None:
