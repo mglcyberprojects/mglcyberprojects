@@ -265,7 +265,19 @@ buttons), fills, declines, order failures, risk limits blocking new entries
 unhandled errors in the agent loop.
 
 Only replies from the configured `TELEGRAM_CHAT_ID` are ever accepted as an
-approval — button presses from any other chat are logged and ignored.
+approval — button presses from any other chat are logged and ignored (same
+rule for the `/status` command and Refresh button below).
+
+**On-demand status:** send `/status` or `/positions` to the chat any time to
+get a snapshot — open position (contract, entry price, live bid, unrealized
+P&L, stop loss/profit target) or "No open position", plus buying power,
+trades today, and today's realized P&L. The reply has a **🔄 Refresh**
+button that re-fetches everything and edits the same message in place,
+rather than sending a new one each time.
+
+This is checked once per agent loop iteration, not instantly — a `/status`
+command or Refresh tap is picked up on the next cycle, so expect up to
+`POLL_SECONDS` (60s by default) of latency, not a live push.
 
 ## Running
 

@@ -91,3 +91,38 @@ class OrderResult:
     submitted: bool
     broker_order_id: str | None
     detail: str
+
+
+@dataclass(frozen=True)
+class PositionStatus:
+    """Live snapshot of an open position for an on-demand status request --
+    current_bid is fetched fresh each time, unlike OpenPosition's static
+    entry_price/thresholds."""
+
+    contract: OptionContract
+    quantity: int
+    entry_price: float
+    current_bid: float
+    stop_loss_price: float
+    profit_target_price: float
+
+    @property
+    def pnl_pct(self) -> float:
+        return (self.current_bid - self.entry_price) / self.entry_price * 100
+
+    @property
+    def pnl_dollars(self) -> float:
+        return (self.current_bid - self.entry_price) * self.quantity * 100
+
+
+@dataclass(frozen=True)
+class AgentStatus:
+    """Everything an on-demand status/refresh reply needs to render --
+    broker- and notifier-agnostic, built by agent.py and rendered into
+    channel-specific text by whichever Notifier is in use."""
+
+    position: PositionStatus | None
+    buying_power: float
+    trades_today: int
+    max_trades_per_day: int
+    realized_pnl_today: float

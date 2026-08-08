@@ -23,7 +23,7 @@ from .broker import Broker, RobinhoodBroker
 from .config import CONFIG, Config
 from .gameplan_strategy import GameplanState, GameplanZones
 from .mcp_broker import MCPBroker
-from .models import Bar, OpenPosition, ProposedOrder, TradeSignal
+from .models import AgentStatus, Bar, OpenPosition, PositionStatus, ProposedOrder, TradeSignal
 from .notifier import Notifier, build_notifier
 from .paper_broker import PaperBroker
 from .risk import RiskManager
@@ -253,6 +253,44 @@ def _try_close_position(
     return result.submitted
 
 
+def _build_agent_status(
+    position: OpenPosition | None, broker: Broker, risk: RiskManager, config: Config,
+) -> AgentStatus:
+    position_status = None
+    if position is not None:
+        quote = broker.get_option_quote(position.contract.contract_id)
+        position_status = PositionStatus(
+            contract=position.contract, quantity=position.quantity, entry_price=position.entry_price,
+            current_bid=quote.bid, stop_loss_price=position.stop_loss_price,
+            profit_target_price=position.profit_target_price,
+        )
+    return AgentStatus(
+        position=position_status, buying_power=broker.get_buying_power(),
+        trades_today=risk.trades_today, max_trades_per_day=config.max_trades_per_day,
+        realized_pnl_today=risk.realized_pnl_today,
+    )
+
+
+def _handle_status_requests(
+    notifier: Notifier, broker: Broker, risk: RiskManager, position: OpenPosition | None, config: Config,
+) -> None:
+    """On-demand /status command + Refresh button, checked once per loop
+    iteration -- see poll_status_requests()'s docstring for the resulting
+    (up to POLL_SECONDS) latency. Builds one live status snapshot and reuses
+    it for every pending request this cycle, rather than re-fetching per
+    request, since they'd all show the same moment-in-time numbers anyway.
+    """
+    pending = notifier.poll_status_requests()
+    if not pending:
+        return
+    status = _build_agent_status(position, broker, risk, config)
+    for req in pending:
+        if req.kind == "new":
+            notifier.post_status(status)
+        else:
+            notifier.update_status(req.message_id, status)
+
+
 def run(live: bool, once: bool, config: Config = CONFIG) -> None:
     if live:
         print(
@@ -308,6 +346,7 @@ def run(live: bool, once: bool, config: Config = CONFIG) -> None:
                     broker, risk, trade_log, config, live, notifier, alerted_reasons,
                     gameplan_state, gameplan_zones,
                 )
+            _handle_status_requests(notifier, broker, risk, position, config)
         except Exception as exc:
             logger.exception("Error in agent loop iteration")
             notifier.alert(f"Error in agent loop: {exc!r}")

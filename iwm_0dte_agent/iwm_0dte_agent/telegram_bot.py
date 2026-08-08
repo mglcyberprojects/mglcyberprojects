@@ -13,6 +13,7 @@ and logged as unauthorized. Treat the bot token and chat id as secrets.
 
 from __future__ import annotations
 
+import datetime as dt
 import logging
 import time as time_module
 import uuid
@@ -22,7 +23,8 @@ import requests
 
 from .config import Config
 from .gameplan_strategy import GameplanZones, parse_zone_message
-from .models import OptionType, ProposedOrder
+from .models import AgentStatus, OptionType, ProposedOrder
+from .notifier import StatusRequest
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +61,37 @@ def _icon_for(text: str) -> str:
         if text.startswith(prefix):
             return icon
     return "ℹ️"
+
+
+_STATUS_COMMANDS = {"/status", "/positions"}
+
+
+def _format_status(status: AgentStatus) -> str:
+    now_str = dt.datetime.now().strftime("%I:%M:%S %p").lstrip("0")
+    lines = [f"📊 <b>Status</b> · as of {_esc(now_str)}", ""]
+    if status.position is not None:
+        p = status.position
+        direction_icon = "📈" if p.contract.option_type == OptionType.CALL else "📉"
+        pnl_icon = "🟢" if p.pnl_dollars >= 0 else "🔴"
+        lines += [
+            "<b>Open position:</b>",
+            f"{direction_icon} <b>{_esc(p.contract.option_type.value.upper())}</b> "
+            f"{_esc(p.contract.symbol)} ${p.contract.strike:g} · exp {_esc(p.contract.expiration)}",
+            f"Qty: {p.quantity} @ entry ${p.entry_price:.2f}",
+            f"Current bid: ${p.current_bid:.2f}",
+            f"{pnl_icon} Unrealized P&L: <b>{p.pnl_pct:+.1f}%</b> (${p.pnl_dollars:+.2f})",
+            f"Stop loss: ${p.stop_loss_price:.2f} · Profit target: ${p.profit_target_price:.2f}",
+            "",
+        ]
+    else:
+        lines += ["No open position.", ""]
+
+    lines.append(f"Buying power: ${status.buying_power:,.2f}")
+    lines.append(
+        f"Trades today: {status.trades_today}/{status.max_trades_per_day} · "
+        f"Realized P&L today: ${status.realized_pnl_today:+.2f}"
+    )
+    return "\n".join(lines)
 
 
 class TelegramError(RuntimeError):
@@ -246,3 +279,70 @@ class TelegramNotifier:
         except Exception:
             logger.exception("Failed to acknowledge Telegram callback")
         return approved
+
+    def poll_status_requests(self) -> list[StatusRequest]:
+        # A single non-blocking (timeout=0) poll, meant to be called once
+        # per agent.py loop iteration -- unlike confirm()/request_zones(),
+        # this never blocks waiting for a reply, so a /status command or
+        # Refresh tap is only ever picked up on the next loop cycle (i.e.
+        # up to POLL_SECONDS of latency, not instant).
+        try:
+            updates = self._call(
+                "getUpdates", offset=self._update_offset, timeout=0,
+                allowed_updates=["message", "callback_query"],
+            )
+        except Exception:
+            logger.exception("Telegram getUpdates failed while polling for status requests")
+            return []
+
+        found: list[StatusRequest] = []
+        for update in updates:
+            self._update_offset = update["update_id"] + 1
+
+            message = update.get("message")
+            if message is not None:
+                chat_id = str(message.get("chat", {}).get("id", ""))
+                text = (message.get("text") or "").strip().lower()
+                if chat_id == self._chat_id and text in _STATUS_COMMANDS:
+                    found.append(StatusRequest(kind="new"))
+                continue
+
+            cq = update.get("callback_query")
+            if cq is None:
+                continue
+            chat_id = str(cq.get("message", {}).get("chat", {}).get("id", ""))
+            data = cq.get("data", "")
+            if chat_id != self._chat_id or not data.startswith("refresh:"):
+                continue  # not ours, or a stale/foreign refresh tap
+            try:
+                self._call("answerCallbackQuery", callback_query_id=cq["id"], text="Refreshing…")
+            except Exception:
+                logger.exception("Failed to acknowledge Telegram refresh callback")
+            found.append(StatusRequest(kind="refresh", message_id=cq["message"]["message_id"]))
+        return found
+
+    def post_status(self, status: AgentStatus) -> None:
+        try:
+            sent = self._call(
+                "sendMessage", chat_id=self._chat_id, text=_format_status(status), parse_mode="HTML",
+            )
+        except Exception:
+            logger.exception("Failed to send Telegram status message")
+            return
+        keyboard = {"inline_keyboard": [[{"text": "🔄 Refresh", "callback_data": f"refresh:{sent['message_id']}"}]]}
+        try:
+            self._call(
+                "editMessageReplyMarkup", chat_id=self._chat_id, message_id=sent["message_id"],
+                reply_markup=keyboard,
+            )
+        except Exception:
+            logger.exception("Failed to attach refresh button to status message")
+
+    def update_status(self, message_id: int, status: AgentStatus) -> None:
+        try:
+            self._call(
+                "editMessageText", chat_id=self._chat_id, message_id=message_id,
+                text=_format_status(status), parse_mode="HTML",
+            )
+        except Exception:
+            logger.exception("Failed to update Telegram status message")

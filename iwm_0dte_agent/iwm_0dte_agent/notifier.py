@@ -9,13 +9,24 @@ called until `confirm()` returns True.
 from __future__ import annotations
 
 import logging
-from typing import Protocol
+from dataclasses import dataclass
+from typing import Literal, Protocol
 
 from .config import Config
 from .gameplan_strategy import GameplanZones
-from .models import ProposedOrder
+from .models import AgentStatus, ProposedOrder
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class StatusRequest:
+    """A pending on-demand status query from the user -- "new" for a fresh
+    /status command, "refresh" for a tap on an existing status message's
+    Refresh button (message_id is which message to edit in place)."""
+
+    kind: Literal["new", "refresh"]
+    message_id: int | None = None
 
 
 class Notifier(Protocol):
@@ -24,6 +35,12 @@ class Notifier(Protocol):
     def confirm(self, order: ProposedOrder, live: bool) -> bool: ...
 
     def request_zones(self, timeout_seconds: int) -> GameplanZones | None: ...
+
+    def poll_status_requests(self) -> list[StatusRequest]: ...
+
+    def post_status(self, status: AgentStatus) -> None: ...
+
+    def update_status(self, message_id: int, status: AgentStatus) -> None: ...
 
 
 def build_notifier(config: Config) -> Notifier:

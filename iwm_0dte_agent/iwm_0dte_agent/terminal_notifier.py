@@ -8,12 +8,44 @@ boundary of the project -- nothing is submitted to a broker without a typed
 from __future__ import annotations
 
 from .gameplan_strategy import GameplanZones, parse_zone_message
-from .models import ProposedOrder
+from .models import AgentStatus, ProposedOrder
+from .notifier import StatusRequest
+
+
+def _print_status(status: AgentStatus) -> None:
+    print("\n" + "-" * 60)
+    print("STATUS")
+    print("-" * 60)
+    if status.position is not None:
+        p = status.position
+        print(f"  {p.contract.option_type.value.upper()} {p.contract.symbol} "
+              f"${p.contract.strike:g} exp {p.contract.expiration}")
+        print(f"  Qty {p.quantity} @ entry ${p.entry_price:.2f}, current bid ${p.current_bid:.2f}")
+        print(f"  Unrealized P&L: {p.pnl_pct:+.1f}% (${p.pnl_dollars:+.2f})")
+        print(f"  Stop loss ${p.stop_loss_price:.2f} / profit target ${p.profit_target_price:.2f}")
+    else:
+        print("  No open position.")
+    print(f"  Buying power: ${status.buying_power:,.2f}")
+    print(f"  Trades today: {status.trades_today}/{status.max_trades_per_day}  "
+          f"Realized P&L today: ${status.realized_pnl_today:+.2f}")
+    print("-" * 60)
 
 
 class TerminalNotifier:
     def alert(self, text: str) -> None:
         print(f"\n[ALERT] {text}")
+
+    def poll_status_requests(self) -> list[StatusRequest]:
+        # Terminal mode is already attended and prints everything live to
+        # stdout as it happens -- there's no on-demand /status command to
+        # poll for the way Telegram mode has, so this is always empty.
+        return []
+
+    def post_status(self, status: AgentStatus) -> None:
+        _print_status(status)
+
+    def update_status(self, message_id: int, status: AgentStatus) -> None:
+        _print_status(status)
 
     def request_zones(self, timeout_seconds: int) -> GameplanZones | None:
         # Terminal mode is already interactive/attended, so this ignores

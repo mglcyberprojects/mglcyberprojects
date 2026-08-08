@@ -1,5 +1,5 @@
 from iwm_0dte_agent.config import Config
-from iwm_0dte_agent.models import OptionContract, OptionType, ProposedOrder
+from iwm_0dte_agent.models import AgentStatus, OptionContract, OptionType, PositionStatus, ProposedOrder
 from iwm_0dte_agent.telegram_bot import TelegramNotifier, _icon_for
 
 
@@ -166,3 +166,153 @@ def test_request_zones_sends_html_prompt_then_waits():
     prompt = prompt_calls[0]
     assert prompt["parse_mode"] == "HTML"
     assert "<code>hold_low hold_high reject_low reject_high</code>" in prompt["text"]
+
+
+def _status_update(update_id, chat_id="42", text="/status"):
+    return {"update_id": update_id, "message": {"chat": {"id": chat_id}, "text": text}}
+
+
+def _refresh_callback_update(update_id, chat_id="42", message_id=99, callback_id="cbq-1"):
+    return {
+        "update_id": update_id,
+        "callback_query": {
+            "id": callback_id,
+            "message": {"chat": {"id": chat_id}, "message_id": message_id},
+            "data": f"refresh:{message_id}",
+        },
+    }
+
+
+def test_poll_status_requests_recognizes_status_command():
+    notifier = make_notifier()
+    notifier._call = lambda method, **params: [_status_update(1)]
+
+    requests = notifier.poll_status_requests()
+
+    assert len(requests) == 1
+    assert requests[0].kind == "new"
+    assert requests[0].message_id is None
+
+
+def test_poll_status_requests_recognizes_positions_alias():
+    notifier = make_notifier()
+    notifier._call = lambda method, **params: [_status_update(1, text="/positions")]
+
+    requests = notifier.poll_status_requests()
+
+    assert len(requests) == 1 and requests[0].kind == "new"
+
+
+def test_poll_status_requests_ignores_unauthorized_chat():
+    notifier = make_notifier()
+    notifier._call = lambda method, **params: [_status_update(1, chat_id="999")]
+
+    assert notifier.poll_status_requests() == []
+
+
+def test_poll_status_requests_ignores_unrelated_message_text():
+    notifier = make_notifier()
+    notifier._call = lambda method, **params: [_status_update(1, text="hello there")]
+
+    assert notifier.poll_status_requests() == []
+
+
+def test_poll_status_requests_recognizes_refresh_callback_and_acks_it():
+    notifier = make_notifier()
+    call_log = []
+
+    def fake_call(method, **params):
+        call_log.append((method, params))
+        if method == "getUpdates":
+            return [_refresh_callback_update(1, message_id=123)]
+        return {}
+
+    notifier._call = fake_call
+
+    requests = notifier.poll_status_requests()
+
+    assert len(requests) == 1
+    assert requests[0].kind == "refresh"
+    assert requests[0].message_id == 123
+    ack_calls = [p for m, p in call_log if m == "answerCallbackQuery"]
+    assert ack_calls and ack_calls[0]["callback_query_id"] == "cbq-1"
+
+
+def test_poll_status_requests_ignores_refresh_from_wrong_chat():
+    notifier = make_notifier()
+    notifier._call = lambda method, **params: [_refresh_callback_update(1, chat_id="999")]
+
+    assert notifier.poll_status_requests() == []
+
+
+def _make_status(with_position=True, pnl_bid=3.00):
+    position = None
+    if with_position:
+        contract = OptionContract("IWM", 228.0, OptionType.CALL, "2026-08-10", pnl_bid, pnl_bid + 0.05, pnl_bid, "instr-1")
+        position = PositionStatus(
+            contract=contract, quantity=3, entry_price=2.00, current_bid=pnl_bid,
+            stop_loss_price=1.00, profit_target_price=4.00,
+        )
+    return AgentStatus(
+        position=position, buying_power=25_000.0, trades_today=1, max_trades_per_day=2,
+        realized_pnl_today=50.0,
+    )
+
+
+def test_post_status_sends_html_then_attaches_refresh_button():
+    notifier = make_notifier()
+    call_log = []
+
+    def fake_call(method, **params):
+        call_log.append((method, params))
+        return {"message_id": 42}
+
+    notifier._call = fake_call
+
+    notifier.post_status(_make_status())
+
+    methods = [m for m, _ in call_log]
+    assert methods == ["sendMessage", "editMessageReplyMarkup"]
+    send_params = call_log[0][1]
+    assert send_params["parse_mode"] == "HTML"
+    assert "<b>Status</b>" in send_params["text"]
+    assert "Unrealized P&L" in send_params["text"]
+    markup_params = call_log[1][1]
+    assert markup_params["message_id"] == 42
+    assert markup_params["reply_markup"]["inline_keyboard"][0][0]["callback_data"] == "refresh:42"
+
+
+def test_post_status_shows_no_position_line_when_flat():
+    notifier = make_notifier()
+    fake_call = FakeCall()
+    notifier._call = fake_call
+
+    notifier.post_status(_make_status(with_position=False))
+
+    _, params = fake_call.calls[0]
+    assert "No open position." in params["text"]
+
+
+def test_post_status_pnl_icon_is_red_when_losing():
+    notifier = make_notifier()
+    fake_call = FakeCall()
+    notifier._call = fake_call
+
+    notifier.post_status(_make_status(pnl_bid=1.00))  # below entry_price=2.00
+
+    _, params = fake_call.calls[0]
+    assert "🔴 Unrealized P&L: <b>-50.0%</b>" in params["text"]
+
+
+def test_update_status_edits_message_text_in_place():
+    notifier = make_notifier()
+    fake_call = FakeCall()
+    notifier._call = fake_call
+
+    notifier.update_status(777, _make_status())
+
+    method, params = fake_call.calls[0]
+    assert method == "editMessageText"
+    assert params["message_id"] == 777
+    assert params["parse_mode"] == "HTML"
+    assert "<b>Status</b>" in params["text"]
