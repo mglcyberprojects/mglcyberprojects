@@ -16,17 +16,49 @@ from __future__ import annotations
 import logging
 import time as time_module
 import uuid
+from html import escape as _esc
 
 import requests
 
 from .config import Config
 from .gameplan_strategy import GameplanZones, parse_zone_message
-from .models import ProposedOrder
+from .models import OptionType, ProposedOrder
 
 logger = logging.getLogger(__name__)
 
 _API_BASE = "https://api.telegram.org/bot{token}/{method}"
 _LONG_POLL_SECONDS = 25
+
+# Checked in order against the start of an alert's text; first match wins.
+# Keeps every plain-text status line visually scannable at a glance without
+# agent.py needing to know anything about Telegram formatting.
+_ALERT_ICONS = [
+    ("Agent started", "🟢"),
+    ("Agent failed to start", "🔴"),
+    ("Market closed", "🌙"),
+    ("Filled:", "✅"),
+    ("Closed (", "✅"),
+    ("Declined", "🚫"),
+    ("Order FAILED", "⚠️"),
+    ("Close order FAILED", "⚠️"),
+    ("No new entries", "⏸️"),
+    ("No gameplan zones", "⏸️"),
+    ("Signal fired", "👀"),
+    ("Gameplan: support broken", "⚠️"),
+    ("Gameplan: resistance broken", "⚠️"),
+    ("Zones set:", "🗺️"),
+    ("Could not parse", "❓"),
+    ("No zones received", "⏱️"),
+    ("No response in time", "⏱️"),
+    ("Error in agent loop", "🔥"),
+]
+
+
+def _icon_for(text: str) -> str:
+    for prefix, icon in _ALERT_ICONS:
+        if text.startswith(prefix):
+            return icon
+    return "ℹ️"
 
 
 class TelegramError(RuntimeError):
@@ -54,26 +86,35 @@ class TelegramNotifier:
         return data["result"]
 
     def alert(self, text: str) -> None:
+        # Plain emoji prefix, no HTML markup involved -- text is whatever
+        # opaque string agent.py built and needs no escaping here.
+        icon = _icon_for(text)
         try:
-            self._call("sendMessage", chat_id=self._chat_id, text=text)
+            self._call("sendMessage", chat_id=self._chat_id, text=f"{icon} {text}")
         except Exception:
             logger.exception("Failed to send Telegram alert: %s", text)
 
     def confirm(self, order: ProposedOrder, live: bool) -> bool:
         mode = "LIVE (real money)" if live else "PAPER (simulated)"
+        mode_icon = "🟢" if live else "🧪"
+        direction_icon = "📈" if order.contract.option_type == OptionType.CALL else "📉"
         nonce = uuid.uuid4().hex[:10]
         minutes = max(1, self._timeout_seconds // 60)
+        # HTML parse_mode below -- every dynamic value must be escaped, since
+        # strategy/risk reason strings routinely contain literal "<=" / ">="
+        # (e.g. "stop loss hit (bid 1.05 <= 1.05)") that would otherwise be
+        # parsed as broken tags rather than displayed as text.
         text = (
-            f"PROPOSED TRADE -- {mode}\n"
-            f"{order.contract.option_type.value.upper()} {order.contract.symbol} "
-            f"${order.contract.strike:g} exp {order.contract.expiration}\n"
-            f"Quantity: {order.quantity}\n"
-            f"Limit: ${order.limit_price:.2f} (bid ${order.contract.bid:.2f} / ask ${order.contract.ask:.2f})\n"
-            f"Est. cost: ${order.limit_price * order.quantity * 100:.2f}\n"
+            f"{mode_icon} <b>PROPOSED TRADE</b> · {_esc(mode)}\n\n"
+            f"{direction_icon} <b>{_esc(order.contract.option_type.value.upper())}</b> "
+            f"{_esc(order.contract.symbol)} ${order.contract.strike:g} · exp {_esc(order.contract.expiration)}\n\n"
+            f"Quantity: <b>{order.quantity}</b>\n"
+            f"Limit: <b>${order.limit_price:.2f}</b> (bid ${order.contract.bid:.2f} / ask ${order.contract.ask:.2f})\n"
+            f"Est. cost: <b>${order.limit_price * order.quantity * 100:.2f}</b>\n"
             f"Stop loss: ${order.stop_loss_price:.2f}\n"
-            f"Profit target: ${order.profit_target_price:.2f}\n"
-            f"Reason: {order.reason}\n\n"
-            f"No response within {minutes} min = treated as decline."
+            f"Profit target: ${order.profit_target_price:.2f}\n\n"
+            f"💬 <i>{_esc(order.reason)}</i>\n\n"
+            f"⏱ No response in {minutes} min → treated as decline"
         )
         keyboard = {
             "inline_keyboard": [[
@@ -83,7 +124,8 @@ class TelegramNotifier:
         }
         try:
             sent = self._call(
-                "sendMessage", chat_id=self._chat_id, text=text, reply_markup=keyboard
+                "sendMessage", chat_id=self._chat_id, text=text,
+                parse_mode="HTML", reply_markup=keyboard,
             )
         except Exception:
             logger.exception("Failed to send Telegram confirmation request, defaulting to decline")
@@ -120,12 +162,16 @@ class TelegramNotifier:
 
     def request_zones(self, timeout_seconds: int) -> GameplanZones | None:
         minutes = max(1, timeout_seconds // 60)
-        self.alert(
-            "Gameplan strategy: send today's zones as:\n"
-            "hold_low hold_high reject_low reject_high\n"
-            "e.g. 228.50 229.20 231.00 232.50\n\n"
-            f"No reply within {minutes} min = no trading today."
+        prompt = (
+            "🗺️ <b>Gameplan strategy</b> — send today's zones as:\n"
+            "<code>hold_low hold_high reject_low reject_high</code>\n"
+            "e.g. <code>228.50 229.20 231.00 232.50</code>\n\n"
+            f"⏱ No reply within {minutes} min = no trading today."
         )
+        try:
+            self._call("sendMessage", chat_id=self._chat_id, text=prompt, parse_mode="HTML")
+        except Exception:
+            logger.exception("Failed to send Telegram zone request")
         deadline = time_module.monotonic() + timeout_seconds
         while time_module.monotonic() < deadline:
             remaining = deadline - time_module.monotonic()
