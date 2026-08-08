@@ -16,6 +16,7 @@ from typing import Sequence
 
 from .broker import Broker
 from .config import Config
+from .market_data import download_bars
 from .models import Bar, OptionContract, OptionType, OrderResult
 from .pricing import synthetic_chain, synthetic_quote
 
@@ -43,24 +44,7 @@ class PaperBroker(Broker):
         return [b for b in self._download(symbol) if b.timestamp >= since]
 
     def _download(self, symbol: str) -> list[Bar]:
-        import yfinance as yf
-
-        data = yf.download(
-            symbol, period="1d", interval="5m", progress=False, auto_adjust=False
-        )
-        bars: list[Bar] = []
-        for ts, row in data.iterrows():
-            bars.append(
-                Bar(
-                    timestamp=ts.to_pydatetime(),
-                    open=float(row["Open"]),
-                    high=float(row["High"]),
-                    low=float(row["Low"]),
-                    close=float(row["Close"]),
-                    volume=float(row["Volume"]),
-                )
-            )
-        return bars
+        return download_bars(symbol, period="1d", interval="5m")
 
     def _years_to_expiry(self) -> float:
         now = dt.datetime.now()

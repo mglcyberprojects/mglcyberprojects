@@ -26,6 +26,7 @@ import datetime as dt
 from dataclasses import dataclass, field
 
 from .config import CONFIG, Config
+from .market_data import download_bars
 from .models import Bar, OptionType
 from .pricing import synthetic_chain
 from .risk import RiskManager
@@ -56,19 +57,9 @@ class DayResult:
 
 
 def fetch_historical_bars(symbol: str, days: int, interval: str = "5m") -> dict[dt.date, list[Bar]]:
-    import yfinance as yf
-
-    data = yf.download(symbol, period=f"{days}d", interval=interval, progress=False, auto_adjust=False)
     by_day: dict[dt.date, list[Bar]] = {}
-    for ts, row in data.iterrows():
-        py_ts = ts.to_pydatetime()
-        bar = Bar(
-            timestamp=py_ts,
-            open=float(row["Open"]), high=float(row["High"]),
-            low=float(row["Low"]), close=float(row["Close"]),
-            volume=float(row["Volume"]),
-        )
-        by_day.setdefault(py_ts.date(), []).append(bar)
+    for bar in download_bars(symbol, period=f"{days}d", interval=interval):
+        by_day.setdefault(bar.timestamp.date(), []).append(bar)
     return by_day
 
 

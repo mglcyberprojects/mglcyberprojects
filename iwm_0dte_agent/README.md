@@ -262,6 +262,7 @@ iwm_0dte_agent/
   models.py             # shared dataclasses (Bar, OptionContract, TradeSignal, ...)
   broker.py             # Broker interface + live Robinhood implementation (robin_stocks)
   mcp_broker.py         # Robinhood's official MCP server for account/equity data, robin_stocks fallback for options
+  market_data.py        # yfinance download + DataFrame-to-Bar conversion, shared by paper broker + backtester
   paper_broker.py       # simulated broker for --dry-run (default)
   pricing.py            # Black-Scholes pricer + synthetic chain/quote builders (paper broker + backtester)
   strategy.py           # ORB + VWAP signal generation (pure functions)
