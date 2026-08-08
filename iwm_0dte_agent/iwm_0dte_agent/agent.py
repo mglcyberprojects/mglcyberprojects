@@ -47,10 +47,13 @@ def list_mcp_tools(config: Config = CONFIG) -> None:
     broker = MCPBroker(config)
     try:
         broker.connect()
+        # close() tears down the session (and its discovered tool list) --
+        # grab what we need while it's still alive, not after.
+        tool_names = sorted(broker.list_discovered_tools())
     finally:
         broker.close()
-    print(f"\nDiscovered {len(broker.list_discovered_tools())} MCP tools at {config.robinhood_mcp_url}:")
-    for name in sorted(broker.list_discovered_tools()):
+    print(f"\nDiscovered {len(tool_names)} MCP tools at {config.robinhood_mcp_url}:")
+    for name in tool_names:
         print(f"  - {name}")
 
 
