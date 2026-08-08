@@ -111,3 +111,34 @@ def select_strike(chain, option_type: OptionType, underlying_price: float, strik
     target_index = atm_index + direction * strike_offset
     target_index = max(0, min(target_index, len(same_type) - 1))
     return same_type[target_index]
+
+
+def select_cheap_otm_strike(
+    chain, option_type: OptionType, underlying_price: float, min_discount_pct: float
+):
+    """Walk strikes out-of-the-money (away from ATM) until the contract's ask
+    is at least `min_discount_pct` cheaper than the ATM contract's ask.
+
+    For small-account smoke testing, where even one ATM 0DTE contract can
+    cost more than the whole account -- picks the first strike cheap enough,
+    rather than a fixed number of strikes out, since how many strikes that
+    takes varies with the day's implied volatility.
+    """
+    same_type = sorted(
+        (c for c in chain if c.option_type == option_type), key=lambda c: c.strike
+    )
+    if not same_type:
+        return None
+    atm_index = min(range(len(same_type)), key=lambda i: abs(same_type[i].strike - underlying_price))
+    atm_ask = same_type[atm_index].ask
+    if atm_ask <= 0:
+        return None
+    threshold = atm_ask * (1 - min_discount_pct)
+    direction = 1 if option_type == OptionType.CALL else -1
+    index = atm_index
+    while 0 <= index < len(same_type):
+        candidate = same_type[index]
+        if 0 < candidate.ask <= threshold:
+            return candidate
+        index += direction
+    return None  # chain doesn't extend far enough OTM to hit the discount target

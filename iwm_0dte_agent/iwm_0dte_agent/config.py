@@ -49,6 +49,13 @@ class Config:
     vwap_filter: bool = field(default_factory=lambda: os.environ.get("VWAP_FILTER", "true").lower() == "true")
     strike_offset: int = field(default_factory=lambda: _env_int("STRIKE_OFFSET", 0))  # 0 = ATM
 
+    # Small-account smoke-test mode: instead of strike_offset/risk-% sizing,
+    # picks the cheapest strike at least otm_min_discount_pct below the ATM
+    # contract's ask, and buys exactly 1 contract if it fits the account's
+    # buying power. See select_cheap_otm_strike() in strategy.py.
+    cheap_otm_mode: bool = field(default_factory=lambda: os.environ.get("CHEAP_OTM_MODE", "false").lower() == "true")
+    otm_min_discount_pct: float = field(default_factory=lambda: _env_float("OTM_MIN_DISCOUNT_PCT", 0.70))
+
     # Gameplan (hold/rejection zone) strategy
     gameplan_require_bull_close: bool = field(
         default_factory=lambda: os.environ.get("GAMEPLAN_REQUIRE_BULL_CLOSE", "true").lower() == "true"

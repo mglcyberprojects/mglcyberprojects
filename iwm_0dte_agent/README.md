@@ -123,6 +123,31 @@ Configured in `.env` (see `.env.example`):
 | `MAX_CONTRACTS_PER_TRADE` | Absolute ceiling on position size regardless of sizing math |
 | `ENTRY_CUTOFF` / `HARD_EXIT` | No new entries after cutoff; all positions force-closed at hard exit |
 
+### Small-account smoke testing (e.g. $50)
+
+A single ATM 0DTE IWM contract can easily cost more than a small test
+account's entire buying power, and the `RISK_PCT_PER_TRADE` sizing formula
+above will just size every trade down to 0 contracts once buying power gets
+that small. `CHEAP_OTM_MODE=true` swaps both of those out for account sizes
+where there's no meaningful "risk %" to size against:
+
+| Setting | Meaning |
+|---|---|
+| `CHEAP_OTM_MODE` | When true, replaces normal strike/sizing logic below |
+| `OTM_MIN_DISCOUNT_PCT` | Walks strikes out-of-the-money until premium is at least this much cheaper than the ATM contract's ask (default `0.70` = 70% cheaper) |
+
+With it on: the agent picks the first strike, walking away from ATM, whose
+ask is at least `OTM_MIN_DISCOUNT_PCT` below the ATM ask (rather than a
+fixed number of strikes out, since how far that takes you moves with the
+day's volatility) — then buys exactly 1 contract if `ask * 100` fits your
+buying power, otherwise skips the signal. Stop loss / profit target %,
+approval-gating, and everything else about the agent is unchanged; this
+only changes *which* strike gets picked and *how many* contracts.
+
+Turn it off (`CHEAP_OTM_MODE=false`, the default) once you're sizing
+against a real account and want `RISK_PCT_PER_TRADE`-based position sizing
+back.
+
 ## Setup
 
 ```bash

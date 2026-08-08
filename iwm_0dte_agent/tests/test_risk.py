@@ -36,6 +36,28 @@ def test_position_size_zero_premium():
     assert risk.position_size(buying_power=25_000, premium_per_contract=0.0) == 0
 
 
+def test_cheap_otm_position_size_buys_one_when_affordable():
+    risk = RiskManager(config=make_config())
+    # $50 buying power, $0.35 premium -> $35/contract, fits.
+    assert risk.cheap_otm_position_size(buying_power=50, premium_per_contract=0.35) == 1
+
+
+def test_cheap_otm_position_size_zero_when_too_expensive():
+    risk = RiskManager(config=make_config())
+    # $50 buying power, $0.65 premium -> $65/contract, doesn't fit.
+    assert risk.cheap_otm_position_size(buying_power=50, premium_per_contract=0.65) == 0
+
+
+def test_cheap_otm_position_size_exactly_at_budget_fits():
+    risk = RiskManager(config=make_config())
+    assert risk.cheap_otm_position_size(buying_power=50, premium_per_contract=0.50) == 1
+
+
+def test_cheap_otm_position_size_zero_premium():
+    risk = RiskManager(config=make_config())
+    assert risk.cheap_otm_position_size(buying_power=50, premium_per_contract=0.0) == 0
+
+
 def test_max_trades_per_day_blocks_further_entries():
     risk = RiskManager(config=make_config(max_trades_per_day=1))
     can_open, _ = risk.can_open_new_trade(buying_power=25_000, now=dt.time(10, 0))

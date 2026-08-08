@@ -27,7 +27,7 @@ from .models import Bar, OpenPosition, ProposedOrder, TradeSignal
 from .notifier import Notifier, build_notifier
 from .paper_broker import PaperBroker
 from .risk import RiskManager
-from .strategy import generate_signal, select_strike
+from .strategy import generate_signal, select_cheap_otm_strike, select_strike
 from .trade_log import TradeLog
 
 logger = logging.getLogger(__name__)
@@ -119,7 +119,12 @@ def _try_open_position(
         return None
 
     chain = broker.get_0dte_chain(config.symbol)
-    contract = select_strike(chain, signal.option_type, signal.underlying_price, config.strike_offset)
+    if config.cheap_otm_mode:
+        contract = select_cheap_otm_strike(
+            chain, signal.option_type, signal.underlying_price, config.otm_min_discount_pct
+        )
+    else:
+        contract = select_strike(chain, signal.option_type, signal.underlying_price, config.strike_offset)
     if contract is None or contract.ask <= 0:
         logger.warning("No usable %s contract found near %.2f", signal.option_type.value, signal.underlying_price)
         notifier.alert(
@@ -128,7 +133,10 @@ def _try_open_position(
         )
         return None
 
-    quantity = risk.position_size(buying_power, contract.ask)
+    if config.cheap_otm_mode:
+        quantity = risk.cheap_otm_position_size(buying_power, contract.ask)
+    else:
+        quantity = risk.position_size(buying_power, contract.ask)
     if quantity <= 0:
         logger.info("Position size computed to 0 contracts, skipping signal: %s", signal.reason)
         notifier.alert(

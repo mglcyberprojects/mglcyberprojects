@@ -1,7 +1,13 @@
 import datetime as dt
 
 from iwm_0dte_agent.models import Bar, OptionContract, OptionType
-from iwm_0dte_agent.strategy import generate_signal, opening_range, select_strike, vwap
+from iwm_0dte_agent.strategy import (
+    generate_signal,
+    opening_range,
+    select_cheap_otm_strike,
+    select_strike,
+    vwap,
+)
 
 MARKET_OPEN = dt.time(9, 30)
 BASE_DAY = dt.datetime(2024, 1, 2)  # any weekday
@@ -104,3 +110,50 @@ def test_select_strike_atm_and_offset():
 
 def test_select_strike_empty_chain_returns_none():
     assert select_strike([], OptionType.CALL, 200.0, 0) is None
+
+
+def _otm_call_chain():
+    # ATM (200) ask=3.00, decaying as strikes move further OTM -- realistic
+    # 0DTE decay shape, not linear.
+    asks = {198: 3.6, 199: 3.3, 200: 3.0, 201: 2.0, 202: 1.3, 203: 0.85, 204: 0.5, 205: 0.3, 206: 0.2}
+    return [
+        OptionContract("IWM", strike, OptionType.CALL, "2024-01-02", ask - 0.05, ask, ask - 0.02, f"c{strike}")
+        for strike, ask in asks.items()
+    ]
+
+
+def _otm_put_chain():
+    # Mirror image: ATM (200) ask=3.00, decaying as strikes move further OTM
+    # (i.e. downward, away from spot) for puts.
+    asks = {202: 3.6, 201: 3.3, 200: 3.0, 199: 2.0, 198: 1.3, 197: 0.85, 196: 0.5, 195: 0.3, 194: 0.2}
+    return [
+        OptionContract("IWM", strike, OptionType.PUT, "2024-01-02", ask - 0.05, ask, ask - 0.02, f"p{strike}")
+        for strike, ask in asks.items()
+    ]
+
+
+def test_select_cheap_otm_strike_walks_out_until_discount_met():
+    # ATM ask 3.00, 70% discount -> threshold 0.90 -> first strike <= that
+    # walking away from ATM is 203 (0.85), not simply "N strikes out".
+    chain = _otm_call_chain()
+    contract = select_cheap_otm_strike(chain, OptionType.CALL, underlying_price=200.2, min_discount_pct=0.70)
+    assert contract.strike == 203
+    assert contract.ask == 0.85
+
+
+def test_select_cheap_otm_strike_puts_walk_downward():
+    chain = _otm_put_chain()
+    contract = select_cheap_otm_strike(chain, OptionType.PUT, underlying_price=199.8, min_discount_pct=0.70)
+    assert contract.strike == 197
+    assert contract.ask == 0.85
+
+
+def test_select_cheap_otm_strike_returns_none_when_chain_too_shallow():
+    # 99% discount off a $3.00 ATM ask needs a $0.03 contract; the chain
+    # never gets that cheap, so there's nothing usable to trade.
+    chain = _otm_call_chain()
+    assert select_cheap_otm_strike(chain, OptionType.CALL, underlying_price=200.2, min_discount_pct=0.99) is None
+
+
+def test_select_cheap_otm_strike_empty_chain_returns_none():
+    assert select_cheap_otm_strike([], OptionType.CALL, 200.0, 0.70) is None

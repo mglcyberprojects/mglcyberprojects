@@ -65,3 +65,11 @@ class RiskManager:
             return 0
         contracts = int(risk_dollars // max_loss_per_contract)
         return max(0, min(contracts, self.config.max_contracts_per_trade))
+
+    def cheap_otm_position_size(self, buying_power: float, premium_per_contract: float) -> int:
+        """Small-account smoke-test sizing: exactly 1 contract if it fits
+        buying_power, else 0. No fractional sizing is possible with a
+        handful of dollars, so the risk_pct_per_trade formula doesn't apply."""
+        if premium_per_contract <= 0:
+            return 0
+        return 1 if premium_per_contract * 100 <= buying_power else 0
