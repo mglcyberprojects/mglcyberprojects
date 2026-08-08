@@ -81,24 +81,36 @@ def test_pick_tool_raises_when_nothing_matches():
         broker._pick_tool("get_portfolio", "get_accounts")
 
 
-def test_get_buying_power_parses_top_level_field():
+def test_get_buying_power_resolves_account_then_reads_nested_field():
     broker, _ = make_broker()
-    broker._mcp_session = FakeMCPSession({"get_portfolio"})
-    broker._call_tool_sync = lambda name, args: {"buying_power": "1234.56"}
+    call_tool = FakeCallTool({
+        "get_accounts": _account_setup(),
+        "get_portfolio": lambda args: {
+            "data": {"buying_power": {"buying_power": "1234.56", "unleveraged_buying_power": "1234.56", "display_currency": "USD"}},
+        },
+    })
+    broker._call_tool_sync = call_tool
+
     assert broker.get_buying_power() == 1234.56
-
-
-def test_get_buying_power_falls_back_to_accounts_list():
-    broker, _ = make_broker()
-    broker._mcp_session = FakeMCPSession({"get_accounts"})
-    broker._call_tool_sync = lambda name, args: {"accounts": [{"buyingPower": 500.0}]}
-    assert broker.get_buying_power() == 500.0
+    portfolio_calls = [args for name, args in call_tool.calls if name == "get_portfolio"]
+    assert portfolio_calls[0] == {"account_number": "ACCT1"}
 
 
 def test_get_buying_power_raises_when_unparseable():
     broker, _ = make_broker()
-    broker._mcp_session = FakeMCPSession({"get_portfolio"})
-    broker._call_tool_sync = lambda name, args: {"unexpected": "shape"}
+    broker._call_tool_sync = FakeCallTool({
+        "get_accounts": _account_setup(),
+        "get_portfolio": {"data": {"unexpected": "shape"}},
+    })
+    with pytest.raises(MCPError):
+        broker.get_buying_power()
+
+
+def test_get_buying_power_raises_when_no_eligible_account():
+    broker, _ = make_broker()
+    broker._call_tool_sync = FakeCallTool({
+        "get_accounts": {"data": {"accounts": []}},
+    })
     with pytest.raises(MCPError):
         broker.get_buying_power()
 

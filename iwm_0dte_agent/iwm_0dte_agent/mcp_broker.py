@@ -361,15 +361,16 @@ class MCPBroker(Broker):
     # --- Broker interface: MCP-backed ---
 
     def get_buying_power(self) -> float:
-        tool = self._pick_tool("get_portfolio", "get_accounts")
-        data = self._call_tool_sync(tool, {})
-        value = _first_present(data, "buying_power", "buyingPower", "cash_available_for_withdrawal")
+        # get_accounts explicitly documents that it does NOT return reliable
+        # buying power -- get_portfolio is the authoritative source, and it
+        # requires account_number and nests the figure at
+        # data.buying_power.buying_power (an object, not a flat field).
+        account_number = self._resolve_account_number()
+        data = self._call_tool_sync("get_portfolio", {"account_number": account_number})
+        buying_power = (data.get("data") or {}).get("buying_power") or {}
+        value = buying_power.get("buying_power")
         if value is None:
-            accounts = data.get("accounts") if isinstance(data, dict) else None
-            if isinstance(accounts, list) and accounts:
-                value = _first_present(accounts[0], "buying_power", "buyingPower")
-        if value is None:
-            raise MCPError(f"Could not find buying power in {tool} response: {data}")
+            raise MCPError(f"Could not find buying power in get_portfolio response: {data}")
         return float(value)
 
     def get_underlying_price(self, symbol: str) -> float:
