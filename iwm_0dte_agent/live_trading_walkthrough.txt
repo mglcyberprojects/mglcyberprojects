@@ -1,0 +1,286 @@
+====================================================================
+IWM 0DTE AGENT - GOING LIVE ON MONDAY: WALKTHROUGH
+====================================================================
+Last updated: 2026-08-09
+
+READ THIS FIRST
+-----------------
+This will place REAL options orders with REAL money. Three honest facts
+before you start:
+
+1. 0DTE options can lose their full value within hours. This agent's
+   strategy logic has been backtested and unit tested, but no backtest
+   or test suite predicts real market behavior.
+
+2. The MCP options path (chain lookup, quotes, and order placement) was
+   built from real schemas pulled from your account via mcp_probe.py --
+   not guessed -- but place_option_order itself has never actually been
+   called. The very first live order this agent places will be the
+   first time that specific code path has ever run for real. Two real
+   bugs were already caught and fixed this way before reaching this
+   point (a cross-task async bug on --list-mcp-tools, and a buying-power
+   parsing bug that would have silently prevented any trade all day) --
+   there is no guarantee a third doesn't exist.
+
+3. Every trade this agent places still requires YOUR explicit approval
+   (Telegram button or terminal y/N) before an order is ever submitted.
+   That has not changed and does not change with --live. Nothing places
+   itself automatically. But approving fast without reading the details
+   defeats the point of the gate -- actually read what you're approving,
+   especially on day one.
+
+Recommendation: treat Monday as a supervised first run, not a set-and-
+forget day. Small size, watch it, be ready to hit Ctrl+C.
+
+
+====================================================================
+PART 1: BEFORE MONDAY (do this now / this weekend)
+====================================================================
+
+1. PULL THE LATEST CODE
+------------------------
+     cd ~/mglcyberprojects/iwm_0dte_agent
+     git pull
+     pip install -r requirements.txt
+
+   Confirm you're on a recent commit -- the buying-power fix landed
+   2026-08-09. If in doubt: `git log -3 --oneline` should show
+   "Fix get_buying_power: get_portfolio needs account_number..." near
+   the top.
+
+
+2. CONFIRM YOUR ROBINHOOD ACCOUNT IS ACTUALLY SET UP FOR THIS
+----------------------------------------------------------------
+   This agent trades through Robinhood's Agentic Trading feature, which
+   uses a SEPARATE, ring-fenced account from your main portfolio -- the
+   agent can only spend money you've specifically deposited into that
+   agentic account. Before Monday, confirm in the Robinhood app:
+     - Agentic Trading is enabled for your account
+     - That agentic account has options approval at level 2 or higher
+       (covered calls, cash-secured puts, long calls/puts -- this agent
+       only ever buys single-leg calls/puts, so level 2 is sufficient)
+     - You have deposited money into THAT account that you are truly
+       willing to lose. Do not assume your main account's buying power
+       carries over -- it doesn't.
+
+   You can verify this from the command line too, read-only, no orders:
+     python -m iwm_0dte_agent.mcp_probe call get_accounts
+   Look for an account with "agentic_allowed": true and
+   "option_level": "option_level_2" (or "_3"). If you don't see one,
+   fix that in the Robinhood app before Monday -- the agent will
+   otherwise fail cleanly with a clear error and never place a trade.
+
+   Then check buying power specifically (replace ACCT_NUMBER with the
+   account_number from the previous command's output):
+     python -m iwm_0dte_agent.mcp_probe call get_portfolio '{"account_number": "ACCT_NUMBER"}'
+   Confirm data.buying_power.buying_power shows the amount you expect.
+
+
+3. CONFIGURE .env
+-------------------
+   If you don't already have one: `cp .env.example .env`. Review/set:
+
+   Robinhood credentials (still required -- robin_stocks is used for
+   underlying price bars):
+     ROBINHOOD_USERNAME=...
+     ROBINHOOD_PASSWORD=...
+     ROBINHOOD_TOTP_SECRET=...     (authenticator app secret, not SMS)
+
+   MCP (leave default unless you have a reason not to):
+     USE_ROBINHOOD_MCP=true
+
+   Telegram (strongly recommended for --live -- lets you approve trades
+   remotely and get alerts without staring at a terminal window, though
+   you should still be watching closely on day one regardless):
+     TELEGRAM_BOT_TOKEN=...
+     TELEGRAM_CHAT_ID=...
+   If you rotated your bot token after the earlier leak, make sure this
+   is the NEW token, not the old one. Confirm it still works:
+     python -m iwm_0dte_agent --once --verbose
+   You should get an "Agent started" message on Telegram (this runs in
+   paper mode by default with --once, so it's a safe way to test the
+   notification path without going live).
+
+   Strategy (pick one):
+     STRATEGY=orb          <- opening-range breakout, no morning input needed
+     STRATEGY=gameplan     <- needs you to send hold/reject zones each morning
+
+   Risk settings -- for a FIRST live day, strongly consider going more
+   conservative than the defaults:
+     RISK_PCT_PER_TRADE=0.01        (consider 0.005 or lower for day 1)
+     STOP_LOSS_PCT=0.50
+     PROFIT_TARGET_PCT=1.00
+     MAX_TRADES_PER_DAY=2           (consider 1 for day 1)
+     MAX_DAILY_LOSS_PCT=0.03
+     MAX_CONTRACTS_PER_TRADE=5      (consider 1 for day 1)
+
+   Session timing -- these compare directly against your MACHINE'S LOCAL
+   CLOCK with no timezone conversion. Defaults assume your machine's
+   clock is US/Eastern. If it isn't, convert to your local equivalent of
+   9:30/14:30/15:45/16:00 ET, or set your machine's timezone to Eastern.
+     MARKET_OPEN=09:30
+     ENTRY_CUTOFF=14:30
+     HARD_EXIT=15:45
+     MARKET_CLOSE=16:00
+
+
+4. RUN THE FULL PRE-FLIGHT CHECK
+------------------------------------
+     python -m iwm_0dte_agent --list-mcp-tools
+
+   This connects via OAuth (opens your browser to Robinhood's login the
+   first time; after that, a cached token in .robinhood_mcp_tokens.json
+   means you usually won't need to re-authorize) and prints every tool
+   discovered. Confirm you see: get_accounts, get_portfolio,
+   get_equity_quotes, get_option_chains, get_option_instruments,
+   get_option_quotes, review_option_order, place_option_order. If any
+   are missing, something changed on Robinhood's end -- tell me before
+   Monday, don't find out mid-session.
+
+   If STRATEGY=gameplan, also decide now how you'll get your zones to
+   the agent Monday morning (see Part 2, step 3).
+
+
+====================================================================
+PART 2: MONDAY -- EXACT PROCESS FLOW
+====================================================================
+
+1. START IT INTERACTIVELY -- NOT THE BACKGROUND SERVICE
+-------------------------------------------------------------
+   Do NOT use deploy/run_agent.bat or the Windows Scheduled Task for
+   your first live session -- that path is documented paper-mode-only
+   and --live's "type LIVE to confirm" startup prompt needs a real
+   terminal you're watching. Just run it directly, in a terminal you're
+   sitting in front of:
+
+     cd ~/mglcyberprojects/iwm_0dte_agent
+     python -m iwm_0dte_agent --live --verbose
+
+   (--verbose is optional but recommended for day one -- more logging
+   detail if something needs debugging.)
+
+
+2. THE LIVE-MODE CONFIRMATION GATE
+--------------------------------------
+   You'll see a warning banner and a prompt:
+     "Type LIVE to confirm you understand and want to proceed:"
+   Type LIVE (all caps, exactly) and press enter. Anything else aborts
+   with no connection attempted. This happens once per process start,
+   not once per trade.
+
+
+3. LOGIN / CONNECTION
+-------------------------
+   - MCPBroker connects via OAuth. If your cached token is still valid
+     you likely won't see a browser prompt; if not, a browser window
+     opens to Robinhood's login (redirect target is
+     http://127.0.0.1:8765/callback -- make sure nothing else is using
+     that port).
+   - robin_stocks (RobinhoodBroker fallback, used for price bars) logs
+     in separately with your username/password/TOTP from .env. This may
+     prompt for additional verification depending on your account's
+     2FA setup -- follow whatever it asks for in the terminal.
+   - If STRATEGY=gameplan: right after "Agent started", you'll get a
+     prompt (Telegram message or terminal input) asking for today's
+     hold/rejection zones. Reply with four numbers:
+       228.50 229.20 231.00 232.50
+     (hold_low hold_high reject_low reject_high). If you don't reply
+     within GAMEPLAN_ZONE_REQUEST_TIMEOUT_SECONDS (default 30 min), the
+     agent keeps running but won't open any positions that day -- have
+     your zones ready BEFORE you start it if you're running gameplan.
+   - If STRATEGY=orb (default): no prompt, it starts polling immediately.
+
+
+4. THE POLLING LOOP
+-----------------------
+   Every POLL_SECONDS (default 60s), the agent:
+     - Checks if market close has passed -> stops for the day if so
+     - If holding a position: checks stop loss / profit target / hard
+       exit time against a live quote
+     - If flat: checks entry rules (risk limits, then the strategy
+       signal) and may propose a new trade
+
+   You'll see log lines for each cycle if --verbose is on. Quiet cycles
+   (no signal) are normal and expected -- most cycles won't propose
+   anything.
+
+
+5. A TRADE GETS PROPOSED
+----------------------------
+   When a signal fires, you'll see (Telegram or terminal) a message
+   with: option type (CALL/PUT), strike, expiration, quantity, limit
+   price, estimated cost, stop loss, profit target, and the reason the
+   signal fired. Read it. Then:
+     - Telegram: tap Approve or Decline
+     - Terminal: type y (approve) or anything else / just enter (decline)
+   No response within TELEGRAM_CONFIRM_TIMEOUT_SECONDS (default 5 min)
+   is treated as a decline -- it never defaults to approved.
+
+
+6. WHAT HAPPENS IF YOU APPROVE
+-----------------------------------
+   Behind the scenes, in order:
+     a. Resolves your agentic account (cached after the first lookup)
+     b. Calls review_option_order -- Robinhood's own dry-run preview,
+        including its own risk alerts (order_checks)
+     c. If Robinhood flags anything (e.g. insufficient buying power, an
+        unlimited-risk warning), the agent DECLINES AUTOMATICALLY and
+        never places the order -- you'll get an alert explaining why
+     d. Only if the review is clean does it call place_option_order
+     e. You get a "Filled" alert with the order id and status. Note:
+        "submitted" means Robinhood accepted the order, not necessarily
+        that it has filled yet -- check the Robinhood app for the live
+        fill status same as you would for any order placed by hand.
+
+
+7. WHILE A POSITION IS OPEN
+--------------------------------
+   Each cycle, the agent checks the current bid against your stop loss
+   and profit target, and checks whether HARD_EXIT time has passed.
+   Any of those trigger a proposed CLOSE, which goes through the same
+   review-then-confirm-then-place flow as the entry. At HARD_EXIT
+   (default 15:45 ET) the position is closed regardless of P&L, to
+   avoid holding into the final minutes before expiration.
+
+
+8. END OF DAY
+-----------------
+   At MARKET_CLOSE (default 16:00 ET) the agent logs "Market closed,
+   stopping," sends a final alert, and the process exits on its own.
+   Nothing carries over silently to the next day -- if you run it again
+   tomorrow, it's a fresh process (fresh gameplan zone prompt if
+   applicable, fresh daily trade/loss counters).
+
+
+====================================================================
+PART 3: HOW TO STOP IT / THINGS TO WATCH FOR
+====================================================================
+
+TO STOP IMMEDIATELY: Ctrl+C in the terminal. This stops the agent from
+making any further decisions, but does NOT automatically close an
+already-open position -- if you stop mid-position, manage that position
+directly in the Robinhood app.
+
+DECLINE, DON'T HESITATE TO: if a proposed trade doesn't look right --
+wrong strike, size looks too big, reason doesn't make sense -- decline
+it. Declining costs nothing; the strategy will look again next cycle if
+conditions still apply.
+
+WATCH FOR ON DAY ONE SPECIFICALLY:
+  - Any MCPError in an alert -- this means something about the real
+    account/order response didn't match what the code expects. Screenshot
+    or copy the exact error text and send it to me; don't try to work
+    around it live.
+  - The FIRST successful place_option_order response -- check the
+    Robinhood app immediately after to confirm the order actually shows
+    up there matching what the agent reported (strike, quantity, price).
+    This is the single most important thing to verify on day one, since
+    it's the one path that's never actually run before.
+  - Order state after "Filled" alerts -- "submitted" isn't "filled."
+    Watch the Robinhood app for actual execution status.
+
+IF SOMETHING LOOKS WRONG: stop (Ctrl+C), don't try to fix it live by
+guessing. Send me the exact log output / error / screenshot and we'll
+fix it properly, same as we did with the last two bugs before this.
+
+====================================================================

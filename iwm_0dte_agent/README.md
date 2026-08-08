@@ -6,6 +6,10 @@ an opening-range-breakout strategy, and proposes trades — but it **never
 places an order without an explicit human confirmation**, either typed at
 the terminal or approved/declined from Telegram. There is no autopilot mode.
 
+**Going live for the first time?** See `live_trading_walkthrough.txt` for
+the exact setup checklist and process flow -- what to verify before your
+first `--live` session, and what to expect during one.
+
 ## Read this before running it
 
 - **0DTE options are extremely high risk.** They can lose their entire value
