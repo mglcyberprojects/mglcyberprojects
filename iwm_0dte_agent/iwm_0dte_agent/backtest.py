@@ -23,11 +23,12 @@ from __future__ import annotations
 import argparse
 import csv
 import datetime as dt
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from .config import CONFIG, Config
+from .gameplan_strategy import GameplanState, GameplanZones
 from .market_data import download_bars
-from .models import Bar, OptionType
+from .models import Bar, OptionType, TradeSignal
 from .pricing import synthetic_chain
 from .risk import RiskManager
 from .strategy import generate_signal, select_strike
@@ -75,11 +76,33 @@ def _quote_for(config: Config, day: dt.date, ts: dt.datetime, spot: float, strik
     return next((c for c in chain if c.strike == strike and c.option_type == option_type), None)
 
 
-def simulate_day(bars: list[Bar], config: Config = CONFIG) -> DayResult:
+def _generate_signal(
+    config: Config, bars: list[Bar], i: int,
+    gameplan_state: GameplanState | None, gameplan_zones: GameplanZones | None,
+) -> TradeSignal | None:
+    if config.strategy == "gameplan":
+        if gameplan_zones is None or gameplan_state is None:
+            return None
+        # Broken-zone (support/resistance) events aren't surfaced in backtest
+        # output -- there's no notifier here, only actual trades get reported.
+        evaluation = gameplan_state.evaluate(
+            bars[i], gameplan_zones,
+            require_bull_close=config.gameplan_require_bull_close,
+            require_bear_close=config.gameplan_require_bear_close,
+        )
+        return evaluation.signal
+    return generate_signal(bars[: i + 1], config.market_open, config.orb_minutes, config.vwap_filter)
+
+
+def simulate_day(
+    bars: list[Bar], config: Config = CONFIG, gameplan_zones: GameplanZones | None = None,
+) -> DayResult:
     """Replays one trading day's bars through the live strategy/risk logic.
 
     Mirrors agent.py's _try_open_position/_try_close_position, but walking
     forward bar-by-bar through history instead of polling a real clock.
+    `gameplan_zones` is only used when config.strategy == "gameplan"; a
+    fresh GameplanState is created per day, matching its daily reset.
     """
     if not bars:
         return DayResult(date=dt.date.today(), skipped_reason="no data")
@@ -89,6 +112,7 @@ def simulate_day(bars: list[Bar], config: Config = CONFIG) -> DayResult:
     buying_power = STARTING_BUYING_POWER
     result = DayResult(date=day)
     position: dict | None = None
+    gameplan_state = GameplanState() if config.strategy == "gameplan" else None
 
     for i, bar in enumerate(bars):
         now_time = bar.timestamp.time()
@@ -124,7 +148,7 @@ def simulate_day(bars: list[Bar], config: Config = CONFIG) -> DayResult:
         if not can_open:
             continue
 
-        signal = generate_signal(bars[: i + 1], config.market_open, config.orb_minutes, config.vwap_filter)
+        signal = _generate_signal(config, bars, i, gameplan_state, gameplan_zones)
         if signal is None:
             continue
 
@@ -204,6 +228,7 @@ def _write_csv(results: list[DayResult], path: str) -> None:
 
 def run_backtest(
     days: int, interval: str = "5m", config: Config = CONFIG, out_csv: str = "backtest_results.csv",
+    gameplan_zones: GameplanZones | None = None,
 ) -> list[DayResult]:
     by_day = fetch_historical_bars(config.symbol, days, interval)
     if not by_day:
@@ -214,7 +239,7 @@ def run_backtest(
             f"trusting a '0 trades' result.\n"
         )
         return []
-    results = [simulate_day(bars, config) for _day, bars in sorted(by_day.items())]
+    results = [simulate_day(bars, config, gameplan_zones) for _day, bars in sorted(by_day.items())]
     _print_report(results)
     _write_csv(results, out_csv)
     print(f"Full trade log written to {out_csv}")
@@ -222,13 +247,40 @@ def run_backtest(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Backtest the IWM 0DTE ORB+VWAP strategy against recent history")
+    parser = argparse.ArgumentParser(description="Backtest the IWM 0DTE ORB+VWAP or gameplan strategy against recent history")
     parser.add_argument("--days", type=int, default=7, help="Calendar days of history to pull (default 7, covers last trading week)")
     parser.add_argument("--interval", default="5m", choices=["1m", "2m", "5m", "15m", "30m"],
                          help="Bar size. 1m only available for roughly the last 7 trading days.")
     parser.add_argument("--out", default="backtest_results.csv", help="CSV output path")
+    parser.add_argument("--strategy", default=None, choices=["orb", "gameplan"],
+                         help="Override STRATEGY from .env for this run.")
+    parser.add_argument("--hold-low", type=float, help="Gameplan strategy: hold zone low (required with --strategy gameplan)")
+    parser.add_argument("--hold-high", type=float, help="Gameplan strategy: hold zone high")
+    parser.add_argument("--reject-low", type=float, help="Gameplan strategy: rejection zone low")
+    parser.add_argument("--reject-high", type=float, help="Gameplan strategy: rejection zone high")
     args = parser.parse_args()
-    run_backtest(days=args.days, interval=args.interval, out_csv=args.out)
+
+    config = CONFIG
+    if args.strategy is not None:
+        config = replace(config, strategy=args.strategy)
+
+    gameplan_zones = None
+    if config.strategy == "gameplan":
+        zone_args = (args.hold_low, args.hold_high, args.reject_low, args.reject_high)
+        if any(z is None for z in zone_args):
+            parser.error(
+                "--strategy gameplan requires all four zone bounds: "
+                "--hold-low --hold-high --reject-low --reject-high\n"
+                "Note: this applies ONE fixed zone set across every day in the backtest window -- "
+                "your real day-to-day discretionary zones would differ. This tests the "
+                "touch/confirm/exit logic against a plausible zone, not your actual daily calls."
+            )
+        gameplan_zones = GameplanZones(
+            hold_low=args.hold_low, hold_high=args.hold_high,
+            reject_low=args.reject_low, reject_high=args.reject_high,
+        )
+
+    run_backtest(days=args.days, interval=args.interval, config=config, out_csv=args.out, gameplan_zones=gameplan_zones)
 
 
 if __name__ == "__main__":

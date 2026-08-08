@@ -44,7 +44,14 @@ the terminal or approved/declined from Telegram. There is no autopilot mode.
 
 ## Strategy
 
-Opening Range Breakout (ORB) with an optional VWAP trend filter:
+`STRATEGY` in `.env` picks which one generates entry signals -- `orb`
+(default) or `gameplan`. Both feed into the same risk management, position
+sizing, confirmation gate, and hard-exit handling described below; only the
+"when do I enter" logic differs.
+
+### Opening Range Breakout (`STRATEGY=orb`, default)
+
+With an optional VWAP trend filter:
 
 1. The first `ORB_MINUTES` (default 15) of the session establishes a
    high/low range.
@@ -60,6 +67,43 @@ Opening Range Breakout (ORB) with an optional VWAP trend filter:
 
 See `iwm_0dte_agent/strategy.py` for the exact logic — it's pure functions
 with no I/O, so it's easy to read and to unit test.
+
+### Gameplan: Hold / Rejection Zones (`STRATEGY=gameplan`)
+
+A port of the "Gameplan: Hold / Rejection Zones" TradingView indicator
+(`iwm_0dte_agent/gameplan_strategy.py`), for a discretionary "I drew these
+levels on the chart this morning" style of trading rather than a computed
+opening range:
+
+1. You define a **hold zone** (support) and a **rejection zone**
+   (resistance) as price ranges, e.g. hold `228.50–229.20`, reject
+   `231.00–232.50`.
+2. A **CALL** signal fires the first time price dips into the hold zone and
+   then closes back above it (a bullish candle, close > open, is required
+   by default — `GAMEPLAN_REQUIRE_BULL_CLOSE`). A **PUT** signal fires
+   symmetrically off the rejection zone. Each fires **at most once per
+   day**.
+3. If price closes all the way through a zone (below the hold zone's low,
+   or above the rejection zone's high), that's flagged as "support broken"
+   / "resistance broken" and sent as an alert — but, matching the original
+   indicator, it does **not** open a position on its own; it's an
+   invalidation marker, not an entry trigger.
+4. Only the indicator's "Manual" zone-source mode is ported — you supply
+   the zones yourself each morning (see below). The other four automatic
+   modes in the original script (Premarket Range, Prior Day Range, Classic
+   Pivots, VWAP+ATR) were left out; ask if you want one added.
+
+**Getting the zones to the agent:** at startup, if `STRATEGY=gameplan`, the
+agent asks for today's zones — over Telegram if configured (an inline
+prompt asking you to reply with four numbers), otherwise a terminal prompt.
+Reply with:
+```
+228.50 229.20 231.00 232.50
+```
+(hold\_low hold\_high reject\_low reject\_high, space- or comma-separated).
+No reply within `GAMEPLAN_ZONE_REQUEST_TIMEOUT_SECONDS` (default 30
+minutes) and the agent keeps running but won't open any positions that day
+— it doesn't fall back to guessing zones on its own.
 
 ## Risk management
 
@@ -196,6 +240,14 @@ prices are still the same synthetic Black-Scholes model paper trading uses
 on strategy *behavior*, not a prediction of real P&L. See
 `backtest_instructions.txt` for the full walkthrough.
 
+To backtest the gameplan strategy, pass a single fixed zone set applied
+across every day in the window (backtesting can't ask you for a fresh
+discretionary read each morning the way live/paper trading does):
+```bash
+python -m iwm_0dte_agent.backtest --strategy gameplan --days 7 \
+    --hold-low 228.50 --hold-high 229.20 --reject-low 231.00 --reject-high 232.50
+```
+
 ## Running unattended on Windows
 
 `deploy/run_agent.bat` + `deploy/setup_autostart.ps1` register the agent as
@@ -266,6 +318,7 @@ iwm_0dte_agent/
   paper_broker.py       # simulated broker for --dry-run (default)
   pricing.py            # Black-Scholes pricer + synthetic chain/quote builders (paper broker + backtester)
   strategy.py           # ORB + VWAP signal generation (pure functions)
+  gameplan_strategy.py  # hold/rejection zone signal generation, ported from a TradingView indicator
   risk.py               # position sizing and daily risk limits
   notifier.py           # Notifier protocol + factory (Telegram if configured, else terminal)
   telegram_bot.py       # Telegram alerts + inline-button approve/decline

@@ -21,8 +21,9 @@ import time as time_module
 
 from .broker import Broker, RobinhoodBroker
 from .config import CONFIG, Config
+from .gameplan_strategy import GameplanState, GameplanZones
 from .mcp_broker import MCPBroker
-from .models import OpenPosition, ProposedOrder
+from .models import Bar, OpenPosition, ProposedOrder, TradeSignal
 from .notifier import Notifier, build_notifier
 from .paper_broker import PaperBroker
 from .risk import RiskManager
@@ -76,9 +77,31 @@ def _maybe_alert_blocked_entry(
     notifier.alert(f"No new entries: {why}")
 
 
+def _generate_signal(
+    config: Config, bars: list[Bar], gameplan_state: GameplanState | None, gameplan_zones: GameplanZones | None,
+    notifier: Notifier,
+) -> TradeSignal | None:
+    if config.strategy == "gameplan":
+        if gameplan_zones is None or not bars or gameplan_state is None:
+            return None
+        evaluation = gameplan_state.evaluate(
+            bars[-1], gameplan_zones,
+            require_bull_close=config.gameplan_require_bull_close,
+            require_bear_close=config.gameplan_require_bear_close,
+        )
+        if evaluation.support_broken:
+            notifier.alert(f"Gameplan: support broken (close below hold zone low {gameplan_zones.hold_low:g})")
+        if evaluation.resistance_broken:
+            notifier.alert(f"Gameplan: resistance broken (close above rejection zone high {gameplan_zones.reject_high:g})")
+        return evaluation.signal
+
+    return generate_signal(bars, config.market_open, config.orb_minutes, config.vwap_filter)
+
+
 def _try_open_position(
     broker: Broker, risk: RiskManager, trade_log: TradeLog, config: Config, live: bool,
     notifier: Notifier, alerted_reasons: set[tuple[dt.date, str]],
+    gameplan_state: GameplanState | None = None, gameplan_zones: GameplanZones | None = None,
 ) -> OpenPosition | None:
     buying_power = broker.get_buying_power()
     can_open, why = risk.can_open_new_trade(buying_power, dt.datetime.now().time())
@@ -88,7 +111,7 @@ def _try_open_position(
         return None
 
     bars = broker.get_intraday_bars(config.symbol, since=_today_open(config))
-    signal = generate_signal(bars, config.market_open, config.orb_minutes, config.vwap_filter)
+    signal = _generate_signal(config, bars, gameplan_state, gameplan_zones, notifier)
     if signal is None:
         return None
 
@@ -246,8 +269,16 @@ def run(live: bool, once: bool, config: Config = CONFIG) -> None:
 
     position: OpenPosition | None = None
     mode = "LIVE" if live else "paper"
-    logger.info("Agent started (%s mode) for %s", mode, config.symbol)
-    notifier.alert(f"Agent started ({mode} mode) for {config.symbol}")
+    logger.info("Agent started (%s mode, %s strategy) for %s", mode, config.strategy, config.symbol)
+    notifier.alert(f"Agent started ({mode} mode, {config.strategy} strategy) for {config.symbol}")
+
+    gameplan_state: GameplanState | None = None
+    gameplan_zones: GameplanZones | None = None
+    if config.strategy == "gameplan":
+        gameplan_state = GameplanState()
+        gameplan_zones = notifier.request_zones(config.gameplan_zone_request_timeout_seconds)
+        if gameplan_zones is None:
+            notifier.alert("No gameplan zones set -- the agent will keep running but won't open any positions today.")
 
     while True:
         now = dt.datetime.now().time()
@@ -262,7 +293,8 @@ def run(live: bool, once: bool, config: Config = CONFIG) -> None:
                     position = None
             else:
                 position = _try_open_position(
-                    broker, risk, trade_log, config, live, notifier, alerted_reasons
+                    broker, risk, trade_log, config, live, notifier, alerted_reasons,
+                    gameplan_state, gameplan_zones,
                 )
         except Exception as exc:
             logger.exception("Error in agent loop iteration")

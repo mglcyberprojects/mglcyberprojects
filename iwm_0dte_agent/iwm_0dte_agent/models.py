@@ -38,12 +38,16 @@ class OptionContract:
 
 @dataclass(frozen=True)
 class TradeSignal:
+    """Emitted by any strategy (ORB, gameplan, ...). orb_high/orb_low/vwap
+    are ORB-specific context and left None for strategies that don't have
+    them -- only option_type/reason/underlying_price are used downstream."""
+
     option_type: OptionType
     reason: str
     underlying_price: float
-    orb_high: float
-    orb_low: float
-    vwap: float | None
+    orb_high: float | None = None
+    orb_low: float | None = None
+    vwap: float | None = None
 
 
 @dataclass(frozen=True)

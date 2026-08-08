@@ -12,6 +12,7 @@ import logging
 from typing import Protocol
 
 from .config import Config
+from .gameplan_strategy import GameplanZones
 from .models import ProposedOrder
 
 logger = logging.getLogger(__name__)
@@ -21,6 +22,8 @@ class Notifier(Protocol):
     def alert(self, text: str) -> None: ...
 
     def confirm(self, order: ProposedOrder, live: bool) -> bool: ...
+
+    def request_zones(self, timeout_seconds: int) -> GameplanZones | None: ...
 
 
 def build_notifier(config: Config) -> Notifier:

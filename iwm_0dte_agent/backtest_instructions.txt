@@ -1,14 +1,15 @@
 ====================================================================
 IWM 0DTE AGENT - BACKTESTING INSTRUCTIONS
 ====================================================================
-Last updated: 2026-08-08
+Last updated: 2026-08-08 (gameplan strategy backtesting added)
 
 WHAT THIS DOES
 --------------
-Runs the exact same opening-range-breakout + VWAP strategy the live/paper
-agent uses, against real recent IWM price history, so you can see how it
-would have entered/exited over the last several trading days without
-waiting for market hours or risking anything.
+Runs the exact same strategy logic the live/paper agent uses -- either the
+opening-range-breakout + VWAP strategy (default) or the gameplan hold/
+rejection zone strategy -- against real recent IWM price history, so you
+can see how it would have entered/exited over the last several trading
+days without waiting for market hours or risking anything.
 
 IMPORTANT - READ THIS FIRST
 ----------------------------
@@ -107,6 +108,23 @@ Write the CSV somewhere else:
      python -m iwm_0dte_agent.backtest --days 7 --out my_results.csv
 
 
+BACKTESTING THE GAMEPLAN (HOLD/REJECTION ZONE) STRATEGY
+-----------------------------------------------------------
+The gameplan strategy normally asks you for today's hold/rejection zones
+each morning (via Telegram or the terminal) -- a backtest can't do that for
+each historical day individually, so instead you supply ONE fixed zone set
+on the command line, applied across every day in the window:
+
+     python -m iwm_0dte_agent.backtest --strategy gameplan --days 7 \
+         --hold-low 228.50 --hold-high 229.20 --reject-low 231.00 --reject-high 232.50
+
+This is useful for checking the touch/confirm/exit LOGIC (does it wait for
+a touch, does it require a bullish/bearish candle, does it fire once and
+only once per day) against a plausible zone -- it is NOT a test of your
+actual daily discretionary zone-picking, since real zones would differ day
+to day. Leaving off --strategy defaults back to the ORB strategy.
+
+
 TWEAKING STRATEGY/RISK PARAMETERS BEFORE A BACKTEST
 -------------------------------------------------------
 The backtester reads the same .env file as live/paper trading. To test a
@@ -133,7 +151,8 @@ WHAT THIS DOES NOT COVER
 - Assumes you could always get filled at the synthetic ask (buy) / bid
   (sell) price shown -- real fills, especially on illiquid strikes, can
   be worse.
-- This is a single-strategy, single-symbol backtester (IWM 0DTE only),
-  matching what the live agent actually trades.
+- This is a single-symbol backtester (IWM 0DTE only), matching what the
+  live agent actually trades. Two strategies are supported (ORB and
+  gameplan), matching what the live agent supports.
 
 ====================================================================

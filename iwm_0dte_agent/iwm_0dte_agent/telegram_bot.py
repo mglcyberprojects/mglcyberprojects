@@ -20,6 +20,7 @@ import uuid
 import requests
 
 from .config import Config
+from .gameplan_strategy import GameplanZones, parse_zone_message
 from .models import ProposedOrder
 
 logger = logging.getLogger(__name__)
@@ -116,6 +117,57 @@ class TelegramNotifier:
         logger.warning("Telegram confirmation timed out after %ss, treating as decline", self._timeout_seconds)
         self.alert("No response in time -- treated as decline.")
         return False
+
+    def request_zones(self, timeout_seconds: int) -> GameplanZones | None:
+        minutes = max(1, timeout_seconds // 60)
+        self.alert(
+            "Gameplan strategy: send today's zones as:\n"
+            "hold_low hold_high reject_low reject_high\n"
+            "e.g. 228.50 229.20 231.00 232.50\n\n"
+            f"No reply within {minutes} min = no trading today."
+        )
+        deadline = time_module.monotonic() + timeout_seconds
+        while time_module.monotonic() < deadline:
+            remaining = deadline - time_module.monotonic()
+            poll_timeout = max(1, min(_LONG_POLL_SECONDS, int(remaining)))
+            try:
+                updates = self._call(
+                    "getUpdates", offset=self._update_offset, timeout=poll_timeout,
+                    allowed_updates=["message"],
+                )
+            except Exception:
+                logger.exception("Telegram getUpdates failed while waiting for zones, retrying")
+                time_module.sleep(2)
+                continue
+
+            for update in updates:
+                self._update_offset = update["update_id"] + 1
+                zones = self._handle_zone_update(update)
+                if zones is not None:
+                    return zones
+
+        logger.warning("No gameplan zones received within %ss", timeout_seconds)
+        self.alert("No zones received in time -- no trading today.")
+        return None
+
+    def _handle_zone_update(self, update: dict) -> GameplanZones | None:
+        message = update.get("message")
+        if not message:
+            return None
+        chat_id = str(message.get("chat", {}).get("id", ""))
+        if chat_id != self._chat_id:
+            logger.warning("Ignoring Telegram message from unauthorized chat %s", chat_id)
+            return None
+        text = message.get("text", "")
+        zones = parse_zone_message(text)
+        if zones is None:
+            self.alert(f'Could not parse "{text}" -- expected 4 numbers, try again.')
+            return None
+        self.alert(
+            f"Zones set: hold [{zones.hold_low:g}-{zones.hold_high:g}], "
+            f"reject [{zones.reject_low:g}-{zones.reject_high:g}]"
+        )
+        return zones
 
     def _handle_update(self, update: dict, nonce: str, message_id: int) -> bool | None:
         cq = update.get("callback_query")

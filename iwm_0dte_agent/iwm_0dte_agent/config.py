@@ -39,10 +39,26 @@ class Config:
     rh_password: str = field(default_factory=lambda: os.environ.get("ROBINHOOD_PASSWORD", ""))
     rh_totp_secret: str = field(default_factory=lambda: os.environ.get("ROBINHOOD_TOTP_SECRET", ""))
 
+    # Which strategy generates entry signals: "orb" (opening-range breakout,
+    # default) or "gameplan" (manual hold/rejection zones, see
+    # gameplan_strategy.py).
+    strategy: str = field(default_factory=lambda: os.environ.get("STRATEGY", "orb").lower())
+
     # Opening-range breakout strategy
     orb_minutes: int = field(default_factory=lambda: _env_int("ORB_MINUTES", 15))
     vwap_filter: bool = field(default_factory=lambda: os.environ.get("VWAP_FILTER", "true").lower() == "true")
     strike_offset: int = field(default_factory=lambda: _env_int("STRIKE_OFFSET", 0))  # 0 = ATM
+
+    # Gameplan (hold/rejection zone) strategy
+    gameplan_require_bull_close: bool = field(
+        default_factory=lambda: os.environ.get("GAMEPLAN_REQUIRE_BULL_CLOSE", "true").lower() == "true"
+    )
+    gameplan_require_bear_close: bool = field(
+        default_factory=lambda: os.environ.get("GAMEPLAN_REQUIRE_BEAR_CLOSE", "true").lower() == "true"
+    )
+    gameplan_zone_request_timeout_seconds: int = field(
+        default_factory=lambda: _env_int("GAMEPLAN_ZONE_REQUEST_TIMEOUT_SECONDS", 1800)
+    )
 
     # Risk management
     risk_pct_per_trade: float = field(default_factory=lambda: _env_float("RISK_PCT_PER_TRADE", 0.01))

@@ -2,6 +2,7 @@ import datetime as dt
 
 from iwm_0dte_agent.backtest import simulate_day
 from iwm_0dte_agent.config import Config
+from iwm_0dte_agent.gameplan_strategy import GameplanZones
 from iwm_0dte_agent.models import Bar, OptionType
 
 BASE_DAY = dt.datetime(2024, 1, 2)  # any weekday
@@ -72,4 +73,36 @@ def test_simulate_day_respects_max_trades_per_day():
         bar(9, 50, 105.0, 105.2, 104.8, 105.0),
     ]
     result = simulate_day(bars, make_config(max_trades_per_day=0))
+    assert result.trades == []
+
+
+def test_simulate_day_gameplan_strategy_touch_then_confirm_then_hard_exit():
+    bars = [
+        bar(9, 30, 99.5, 99.6, 98.5, 98.7),   # low dips into hold zone [98, 99]
+        bar(9, 35, 98.7, 100.5, 98.6, 100.2),  # bullish close back above hold_high -> CALL confirmed
+        bar(9, 40, 100.2, 100.4, 100.0, 100.2),  # flat -- hard exit at 9:40 fires here
+    ]
+    zones = GameplanZones(hold_low=98.0, hold_high=99.0, reject_low=102.0, reject_high=103.0)
+    config = make_config(strategy="gameplan", hard_exit=dt.time(9, 40))
+
+    result = simulate_day(bars, config, gameplan_zones=zones)
+
+    assert len(result.trades) == 1
+    trade = result.trades[0]
+    assert trade.option_type == OptionType.CALL
+    assert trade.entry_time.time() == dt.time(9, 35)
+    assert trade.exit_time.time() == dt.time(9, 40)
+    assert "hard exit" in trade.exit_reason
+
+
+def test_simulate_day_gameplan_strategy_without_zones_never_trades():
+    bars = [
+        bar(9, 30, 99.5, 99.6, 98.5, 98.7),
+        bar(9, 35, 98.7, 100.5, 98.6, 100.2),
+        bar(9, 40, 100.2, 100.4, 100.0, 100.2),
+    ]
+    config = make_config(strategy="gameplan", hard_exit=dt.time(9, 40))
+
+    result = simulate_day(bars, config, gameplan_zones=None)
+
     assert result.trades == []

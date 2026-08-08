@@ -7,12 +7,27 @@ boundary of the project -- nothing is submitted to a broker without a typed
 
 from __future__ import annotations
 
+from .gameplan_strategy import GameplanZones, parse_zone_message
 from .models import ProposedOrder
 
 
 class TerminalNotifier:
     def alert(self, text: str) -> None:
         print(f"\n[ALERT] {text}")
+
+    def request_zones(self, timeout_seconds: int) -> GameplanZones | None:
+        # Terminal mode is already interactive/attended, so this ignores
+        # timeout_seconds and just blocks on input() -- there's no console
+        # you'd be leaving unattended the way Telegram mode needs a timeout for.
+        print("\nGameplan strategy: enter today's zones.")
+        print("Format: hold_low hold_high reject_low reject_high  (e.g. 228.50 229.20 231.00 232.50)")
+        raw = input("Zones (blank to skip trading today): ").strip()
+        if not raw:
+            return None
+        zones = parse_zone_message(raw)
+        if zones is None:
+            print("Could not parse that -- expected exactly 4 numbers. Skipping trading today.")
+        return zones
 
     def confirm(self, order: ProposedOrder, live: bool) -> bool:
         mode = "LIVE (real money)" if live else "PAPER (simulated)"
