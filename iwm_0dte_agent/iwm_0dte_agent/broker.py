@@ -112,7 +112,13 @@ class RobinhoodBroker(Broker):
         )
         bars: list[Bar] = []
         for h in historicals or []:
-            ts = dt.datetime.fromisoformat(h["begins_at"].replace("Z", "+00:00"))
+            # robin_stocks returns begins_at as UTC ("...Z"); `since` (from
+            # _today_open) is naive local time, matching every other
+            # timestamp in this codebase (market_open/entry_cutoff/etc. are
+            # all compared as naive local too) -- convert to match rather
+            # than compare aware vs. naive, which raises TypeError.
+            ts_utc = dt.datetime.fromisoformat(h["begins_at"].replace("Z", "+00:00"))
+            ts = ts_utc.astimezone().replace(tzinfo=None)
             if ts < since:
                 continue
             bars.append(
