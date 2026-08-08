@@ -1,0 +1,139 @@
+====================================================================
+IWM 0DTE AGENT - BACKTESTING INSTRUCTIONS
+====================================================================
+Last updated: 2026-08-08
+
+WHAT THIS DOES
+--------------
+Runs the exact same opening-range-breakout + VWAP strategy the live/paper
+agent uses, against real recent IWM price history, so you can see how it
+would have entered/exited over the last several trading days without
+waiting for market hours or risking anything.
+
+IMPORTANT - READ THIS FIRST
+----------------------------
+The underlying IWM price data is real (pulled from Yahoo Finance). The
+0DTE OPTION PRICES ARE NOT REAL. There is no free source of historical
+0DTE option chains, so the backtester prices options the same way paper
+trading does: a Black-Scholes formula with a flat 20% implied volatility
+assumption. This means:
+
+  - Entry/exit TIMING and the strategy's DECISIONS (does it break out,
+    does it respect the stop loss / profit target / hard exit) are a
+    faithful test of the strategy logic.
+  - The actual DOLLAR P&L numbers are an approximation, not a prediction
+    of what you'd really have made or lost. Real 0DTE bid/ask spreads and
+    implied volatility move around a lot more than a flat 20% assumption,
+    especially near the open, near expiry, and around news.
+
+Treat this as "does the strategy behave the way I expect," not "here is
+what I would have earned trading real money."
+
+One more honesty note: this backtester was built and unit-tested with
+synthetic data, but the actual live download from Yahoo Finance could not
+be tested end-to-end from the environment it was built in (network access
+to Yahoo Finance was blocked there). The code path is the same one paper
+trading already uses successfully on your machine, so it should work, but
+if you hit an error on your first real run, that's useful information --
+send me the exact error and I'll fix it.
+
+
+PREREQUISITES
+--------------
+1. You already have the repo cloned and the branch checked out:
+     cd ~/mglcyberprojects/iwm_0dte_agent
+     git pull
+
+2. Dependencies installed (same as normal setup):
+     pip install -r requirements.txt
+   (If you're using a venv you already created, activate it first:
+     source .venv/Scripts/activate      <- Git Bash on Windows
+   or just run "pip install -r requirements.txt" globally if you didn't
+   set up a venv, same as before.)
+
+
+STEP-BY-STEP: BACKTEST "LAST WEEK"
+------------------------------------
+1. From the iwm_0dte_agent directory, run:
+
+     python -m iwm_0dte_agent.backtest --days 7
+
+   --days 7 pulls the last 7 CALENDAR days of data, which safely covers
+   the last 5 trading days ("last week") even if today is a Monday and
+   the most recent weekday data is a few days back. Weekends/holidays
+   just have no data and are skipped automatically.
+
+2. Watch the console output. For each trading day found, you'll see a
+   line like:
+
+     Date        Trades         P&L
+     ------------------------------
+     2026-08-03  1              +42.50
+         09:45 BUY CALL $228 @ 2.10  ->  10:15 @ 2.60  pnl=+50.00  (profit target hit (bid 2.60 >= 2.60))
+     2026-08-04  0                0.00
+     2026-08-05  1              -35.00
+         09:45 BUY PUT $225 @ 1.75  ->  15:45 @ 1.05  pnl=-35.00  (hard exit time reached (15:45))
+     ------------------------------
+     Total trades: 2   Win rate: 50.0%   Total P&L: +7.50
+
+   Each day shows: how many trades fired, that day's P&L, and (indented)
+   the actual entry/exit detail for each trade -- what was bought, at
+   what price, when it exited, why it exited, and the P&L.
+
+3. A full CSV of every simulated trade is also written to:
+     backtest_results.csv
+   (in the iwm_0dte_agent directory, unless you override the path -- see
+   options below). Open it in Excel or Google Sheets for further analysis.
+
+4. If you see this instead of a report:
+
+     "No historical data came back for IWM over the last 7 day(s)..."
+
+   That means the download failed (network issue, rate limit, etc.) --
+   NOT that there were zero trades that week. Try again in a minute; if it
+   keeps happening, tell me the exact error text above that message.
+
+
+USEFUL VARIATIONS
+-------------------
+Backtest a longer window (e.g. the last month):
+     python -m iwm_0dte_agent.backtest --days 30
+
+Use finer 1-minute bars instead of 5-minute (only available for roughly
+the last 7 trading days -- Yahoo Finance's own limit, not this tool's):
+     python -m iwm_0dte_agent.backtest --days 7 --interval 1m
+
+Write the CSV somewhere else:
+     python -m iwm_0dte_agent.backtest --days 7 --out my_results.csv
+
+
+TWEAKING STRATEGY/RISK PARAMETERS BEFORE A BACKTEST
+-------------------------------------------------------
+The backtester reads the same .env file as live/paper trading. To test a
+different opening-range window, stop loss %, profit target %, position
+sizing, entry cutoff, or hard exit time, edit .env (copy from .env.example
+first if you don't have one yet), then re-run the backtest command. For
+example, to see how a tighter 10-minute opening range and a 40% stop loss
+would have performed, set in .env:
+
+     ORB_MINUTES=10
+     STOP_LOSS_PCT=0.40
+
+...save, then re-run "python -m iwm_0dte_agent.backtest --days 7" and
+compare the new report/CSV to your previous run. Rename or copy the CSV
+between runs (e.g. --out backtest_orb10.csv) if you want to keep multiple
+results to compare side by side.
+
+
+WHAT THIS DOES NOT COVER
+---------------------------
+- No real historical option bid/ask, no real implied volatility, no
+  volume/liquidity constraints on option fills (see the caveat above).
+- No slippage or commissions modeling.
+- Assumes you could always get filled at the synthetic ask (buy) / bid
+  (sell) price shown -- real fills, especially on illiquid strikes, can
+  be worse.
+- This is a single-strategy, single-symbol backtester (IWM 0DTE only),
+  matching what the live agent actually trades.
+
+====================================================================

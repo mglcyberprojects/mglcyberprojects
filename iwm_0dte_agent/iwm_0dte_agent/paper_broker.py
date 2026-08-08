@@ -17,7 +17,7 @@ from typing import Sequence
 from .broker import Broker
 from .config import Config
 from .models import Bar, OptionContract, OptionType, OrderResult
-from .pricing import bs_price
+from .pricing import synthetic_chain, synthetic_quote
 
 logger = logging.getLogger(__name__)
 
@@ -76,45 +76,13 @@ class PaperBroker(Broker):
     def get_0dte_chain(self, symbol: str) -> Sequence[OptionContract]:
         spot = self.get_underlying_price(symbol)
         today = dt.date.today().isoformat()
-        tte = self._years_to_expiry()
-        strikes = [round(spot) + offset for offset in range(-5, 6)]
-        contracts = []
-        for strike in strikes:
-            for option_type in (OptionType.CALL, OptionType.PUT):
-                mid = bs_price(spot, strike, tte, option_type)
-                spread = max(0.02, mid * 0.05)
-                bid, ask = round(mid - spread / 2, 2), round(mid + spread / 2, 2)
-                contracts.append(
-                    OptionContract(
-                        symbol=symbol,
-                        strike=float(strike),
-                        option_type=option_type,
-                        expiration=today,
-                        bid=max(bid, 0.01),
-                        ask=ask,
-                        mid=round((bid + ask) / 2, 2),
-                        contract_id=f"paper-{symbol}-{today}-{strike}-{option_type.value}",
-                    )
-                )
-        return contracts
+        return synthetic_chain(symbol, spot, today, self._years_to_expiry())
 
     def get_option_quote(self, contract_id: str) -> OptionContract:
         _, symbol, expiration, strike, option_type = contract_id.split("-")
         spot = self.get_underlying_price(symbol)
-        tte = self._years_to_expiry()
-        opt_type = OptionType(option_type)
-        mid = bs_price(spot, float(strike), tte, opt_type)
-        spread = max(0.02, mid * 0.05)
-        bid, ask = round(mid - spread / 2, 2), round(mid + spread / 2, 2)
-        return OptionContract(
-            symbol=symbol,
-            strike=float(strike),
-            option_type=opt_type,
-            expiration=expiration,
-            bid=max(bid, 0.01),
-            ask=ask,
-            mid=round((bid + ask) / 2, 2),
-            contract_id=contract_id,
+        return synthetic_quote(
+            symbol, float(strike), OptionType(option_type), expiration, spot, self._years_to_expiry()
         )
 
     def submit_order(

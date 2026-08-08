@@ -183,6 +183,19 @@ python -m iwm_0dte_agent --list-mcp-tools
 All proposed and executed trades are appended to `trade_log.csv`
 (configurable via `TRADE_LOG_PATH`).
 
+## Backtesting
+
+```bash
+python -m iwm_0dte_agent.backtest --days 7
+```
+
+Replays the same strategy/risk logic against recent real IWM price history
+and prints a per-day trade report plus a `backtest_results.csv`. Option
+prices are still the same synthetic Black-Scholes model paper trading uses
+(no free source of historical 0DTE chains exists), so treat this as a check
+on strategy *behavior*, not a prediction of real P&L. See
+`backtest_instructions.txt` for the full walkthrough.
+
 ## Running unattended on Windows
 
 `deploy/run_agent.bat` + `deploy/setup_autostart.ps1` register the agent as
@@ -250,15 +263,16 @@ iwm_0dte_agent/
   broker.py             # Broker interface + live Robinhood implementation (robin_stocks)
   mcp_broker.py         # Robinhood's official MCP server for account/equity data, robin_stocks fallback for options
   paper_broker.py       # simulated broker for --dry-run (default)
-  pricing.py            # Black-Scholes pricer used only by the paper broker
+  pricing.py            # Black-Scholes pricer + synthetic chain/quote builders (paper broker + backtester)
   strategy.py           # ORB + VWAP signal generation (pure functions)
   risk.py               # position sizing and daily risk limits
   notifier.py           # Notifier protocol + factory (Telegram if configured, else terminal)
   telegram_bot.py       # Telegram alerts + inline-button approve/decline
   terminal_notifier.py  # terminal fallback: print alerts, y/N confirmation prompt
   trade_log.py          # CSV audit log of every proposed/filled/declined trade
+  backtest.py           # replays strategy/risk logic against historical IWM bars
   agent.py              # main loop + CLI entrypoint
-tests/                  # unit tests for strategy/risk/pricing/notifier/mcp_broker
+tests/                  # unit tests for strategy/risk/pricing/notifier/mcp_broker/backtest
 deploy/
   run_agent.bat         # Windows restart-loop wrapper (paper mode)
   setup_autostart.ps1   # registers run_agent.bat as a logon-triggered Scheduled Task
