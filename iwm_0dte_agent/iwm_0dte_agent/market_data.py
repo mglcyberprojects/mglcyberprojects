@@ -8,6 +8,16 @@ makes `row["Open"]` come back as a pandas Series instead of a scalar and
 breaks a plain `float(row["Open"])`. `_bars_from_dataframe` flattens that
 away defensively so callers don't have to know or care which shape their
 installed yfinance version returns.
+
+yfinance's intraday index also frequently comes back timezone-aware
+(localized to the exchange's own timezone, e.g. America/New_York) rather
+than naive. Every other timestamp in this codebase (market_open/
+entry_cutoff/etc., and `since` in get_intraday_bars callers) is naive local
+time -- comparing an aware bar timestamp against that raises "can't compare
+offset-naive and offset-aware datetimes" the same way it did in
+RobinhoodBroker.get_intraday_bars (see broker.py) before that was fixed.
+Normalized here the same way: convert to naive local time if aware, leave
+alone if the installed yfinance version already returns naive timestamps.
 """
 
 from __future__ import annotations
@@ -24,9 +34,12 @@ def _bars_from_dataframe(data) -> list[Bar]:
 
     bars: list[Bar] = []
     for ts, row in data.iterrows():
+        timestamp = ts.to_pydatetime()
+        if timestamp.tzinfo is not None:
+            timestamp = timestamp.astimezone().replace(tzinfo=None)
         bars.append(
             Bar(
-                timestamp=ts.to_pydatetime(),
+                timestamp=timestamp,
                 open=float(row["Open"]),
                 high=float(row["High"]),
                 low=float(row["Low"]),

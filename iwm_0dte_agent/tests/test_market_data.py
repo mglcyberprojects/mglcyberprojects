@@ -12,6 +12,12 @@ def _index():
     )
 
 
+def _tz_aware_index():
+    # yfinance's intraday index frequently comes back localized to the
+    # exchange's own timezone rather than naive.
+    return _index().tz_localize("America/New_York")
+
+
 def test_bars_from_dataframe_flat_columns():
     df = pd.DataFrame(
         {
@@ -76,3 +82,32 @@ def test_download_bars_parses_multiindex_response(monkeypatch):
 
     assert len(bars) == 1
     assert bars[0].close == 100.5
+
+
+def test_bars_from_dataframe_normalizes_timezone_aware_index():
+    # Reproduces a real crash: yfinance's intraday index frequently comes
+    # back timezone-aware (localized to the exchange's timezone), while
+    # every other timestamp in this codebase -- including `since` in
+    # PaperBroker.get_intraday_bars -- is naive local time. Comparing them
+    # directly (`b.timestamp >= since`) raised "can't compare offset-naive
+    # and offset-aware datetimes" in paper trading, the same class of bug
+    # already fixed once in RobinhoodBroker.get_intraday_bars (broker.py).
+    df = pd.DataFrame(
+        {
+            "Open": [100.0, 100.5],
+            "High": [101.0, 101.2],
+            "Low": [99.5, 100.0],
+            "Close": [100.5, 100.8],
+            "Volume": [1000, 1200],
+        },
+        index=_tz_aware_index(),
+    )
+
+    bars = _bars_from_dataframe(df)  # must not raise
+
+    assert len(bars) == 2
+    assert bars[0].timestamp.tzinfo is None  # normalized to naive local
+    # The actual comparison PaperBroker.get_intraday_bars performs -- must
+    # not raise TypeError now that both sides are naive.
+    since = dt.datetime(2024, 1, 2, 0, 0)
+    assert all(b.timestamp >= since for b in bars)
