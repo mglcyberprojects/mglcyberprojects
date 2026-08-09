@@ -1,0 +1,152 @@
+IWM 0DTE AGENT -- QUICK COMMAND REFERENCE
+==========================================
+Everything here assumes you're in the iwm_0dte_agent/ directory with the
+venv activated. See README.md for full explanations -- this is just the
+cheat sheet.
+
+
+RUNNING THE AGENT
+------------------
+python -m iwm_0dte_agent                  Paper trading (default, safe, no Robinhood connection)
+python -m iwm_0dte_agent --once           Single iteration then exit (test outside market hours)
+python -m iwm_0dte_agent --once --verbose Same, with debug logging
+python -m iwm_0dte_agent --live           Real orders on Robinhood (asks you to type LIVE to confirm)
+python -m iwm_0dte_agent --list-mcp-tools List every tool Robinhood's MCP server currently exposes,
+                                           no trading, no robin_stocks -- use this to sanity check
+                                           the connection before a live session.
+
+
+BACKTESTING
+------------
+python -m iwm_0dte_agent.backtest --days 14
+    Backtest the last 14 calendar days against real IWM price bars.
+    Reads strategy/risk parameters from .env -- edit .env, rerun, compare.
+
+    --interval 1m|2m|5m|15m|30m   Bar size (default 5m; 1m only ~7 days back)
+    --out FILE.csv                 Where to write the full trade log (default backtest_results.csv)
+    --strategy orb|gameplan        Override STRATEGY from .env for this run only
+
+    Gameplan backtest (all four required together):
+    python -m iwm_0dte_agent.backtest --days 14 --strategy gameplan \
+        --hold-low 228.50 --hold-high 229.20 --reject-low 231.00 --reject-high 232.50
+
+CAVEAT: option prices in the backtest are synthetic Black-Scholes (flat 20%
+IV), not real historical quotes -- treat results as a check on strategy
+*behavior*, not a prediction of real fill prices/P&L.
+
+
+MCP DIAGNOSTICS (Robinhood's official server)
+-----------------------------------------------
+python -m iwm_0dte_agent.mcp_probe describe get_option_chains
+    Print a tool's real input/output JSON schema. 100% safe on anything,
+    including order-placement tools -- reads the declared schema, never
+    calls it. Takes multiple tool names; add --out FILE.txt to dump several.
+
+python -m iwm_0dte_agent.mcp_probe call get_option_chains '{"underlying_symbol": "IWM"}'
+    Actually invoke a tool and print the raw response. Fine for read-only
+    tools; asks for a second confirmation before anything that can
+    place/cancel/modify an order or exercise a position.
+
+
+TELEGRAM (once TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID are set in .env)
+------------------------------------------------------------------------
+/status  or  /positions     On-demand: open positions (live P&L), buying
+                             power, trades today, today's realized P&L.
+                             Rendered as a list (today always 0 or 1 entry).
+Tap the persistent "Positions" button   Same reply as /status -- always
+                                         visible under the message box,
+                                         sent once automatically at startup.
+Tap "Refresh" on a status card          Re-fetches and edits that same
+                                         message in place with fresh numbers.
+Approve / Decline buttons               On every proposed trade (entry or
+                                         exit) -- nothing is ever submitted
+                                         without one of these.
+
+Note: /status, Positions, and Refresh are checked once per agent loop
+cycle (POLL_SECONDS, default 60s) -- not instant. Approve/Decline on a
+specific proposed trade responds immediately (that's a dedicated wait, not
+the shared poll).
+
+
+TESTS
+------
+python -m pytest -q                       Full suite
+python -m pytest tests/test_strategy.py -v    One file, verbose
+python -m py_compile iwm_0dte_agent/*.py tests/*.py   Quick syntax/import check
+
+
+GIT WORKFLOW
+-------------
+git fetch origin claude/iwm-0dte-trading-agent-pnaktg
+git status                                Always check before pulling/pushing
+git pull origin claude/iwm-0dte-trading-agent-pnaktg
+
+If .env.example conflicts with local edits and you don't need to keep them:
+git checkout -- :/iwm_0dte_agent/.env.example    (":/" = resolve from repo root,
+                                                    works from any subdirectory)
+git pull origin claude/iwm-0dte-trading-agent-pnaktg
+
+.env (your real secrets) is gitignored -- it never pulls/pushes. Only
+.env.example (the template, no secrets) is tracked. After pulling new
+code, diff .env.example against your .env by eye for any new variables
+worth adding.
+
+
+ENV VARS QUICK LIST (see .env.example for full comments on each)
+--------------------------------------------------------------------
+Strategy & signal quality:
+  STRATEGY=orb|gameplan
+  ORB_MINUTES=15                    Opening range window length
+  VWAP_FILTER=true                  Breakout must be on the correct side of VWAP too
+  VOLUME_FILTER=true                Breakout bar's volume must beat VOLUME_MULTIPLIER x today's average
+  VOLUME_MULTIPLIER=1.5
+  BREAKOUT_BUFFER_PCT=0.001         Close must clear the level by this fraction (0.1%), not just tick through it
+  STRIKE_OFFSET=0                   0 = ATM, N = N strikes further OTM
+
+Small-account smoke test:
+  CHEAP_OTM_MODE=false              true = pick cheapest strike + buy 1 contract if affordable
+  OTM_MIN_DISCOUNT_PCT=0.70         How much cheaper than ATM the picked strike must be
+
+Risk management:
+  RISK_PCT_PER_TRADE=0.01           Ignored when CHEAP_OTM_MODE=true
+  STOP_LOSS_PCT=0.50
+  PROFIT_TARGET_PCT=1.00
+  MAX_TRADES_PER_DAY=2
+  MAX_DAILY_LOSS_PCT=0.03
+  MAX_CONTRACTS_PER_TRADE=5
+
+Session timing (24h local time -- machine's clock must actually be ET):
+  MARKET_OPEN=09:30  ENTRY_CUTOFF=14:30  HARD_EXIT=15:45  MARKET_CLOSE=16:00
+  POLL_SECONDS=60                   Main loop cadence -- also /status latency ceiling
+
+Broker connection:
+  USE_ROBINHOOD_MCP=true            Official OAuth MCP path (default) -- no robin_stocks involved
+  ROBINHOOD_USERNAME / PASSWORD / TOTP_SECRET   Only needed if USE_ROBINHOOD_MCP=false
+
+Telegram:
+  TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID   Blank = falls back to terminal y/N prompt
+  TELEGRAM_CONFIRM_TIMEOUT_SECONDS=300
+
+Gameplan strategy (only used when STRATEGY=gameplan):
+  GAMEPLAN_REQUIRE_BULL_CLOSE=true  GAMEPLAN_REQUIRE_BEAR_CLOSE=true
+  GAMEPLAN_ZONE_REQUEST_TIMEOUT_SECONDS=1800
+
+
+COMMON GOTCHAS
+---------------
+- Edited .env but nothing changed?
+    1. Confirm you actually saved the file and the values match what you expect:
+       grep -i "SOME_VAR" .env
+    2. Check nothing in your shell is silently overriding it -- python-dotenv
+       does NOT override a variable already set in the real environment:
+       echo $SOME_VAR     (should print nothing)
+       If it prints something, `unset SOME_VAR` and try again.
+    3. Confirm you're on the code version that actually reads that var:
+       git log --oneline -5
+
+- Windows autostart (deploy/run_agent.bat) always runs PAPER mode only,
+  by design -- --live requires an attended terminal (it blocks on typing
+  "LIVE" and, without Telegram, on a y/N prompt per trade).
+
+- First --live run opens a browser for Robinhood MCP OAuth -- needs port
+  8765 free (ROBINHOOD_MCP_OAUTH_PORT) and a browser on the same machine.
