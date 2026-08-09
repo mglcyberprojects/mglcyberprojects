@@ -53,8 +53,24 @@ def generate_signal(
     market_open: dt.time,
     orb_minutes: int,
     use_vwap_filter: bool = True,
+    use_volume_filter: bool = True,
+    volume_multiplier: float = 1.5,
+    breakout_buffer_pct: float = 0.001,
 ) -> TradeSignal | None:
-    """Evaluate the latest bar against the opening range and (optionally) VWAP."""
+    """Evaluate the latest bar against the opening range, plus three optional
+    confirming filters (each independently toggleable):
+
+    - VWAP: breakout must be on the correct side of session VWAP too.
+    - Volume: the breakout bar's volume must beat volume_multiplier x the
+      average volume of every bar so far today -- filters out breakouts on
+      unconvincing (thin) participation.
+    - Breakout buffer: the close must clear the ORB level by
+      breakout_buffer_pct, not just tick through it by any amount -- cuts
+      down on immediate-failure breakouts right at the level.
+
+    All three trade signal frequency for signal quality; each can be
+    disabled independently for testing/comparison.
+    """
     orb = opening_range(bars, market_open, orb_minutes)
     if orb is None:
         return None
@@ -72,8 +88,21 @@ def generate_signal(
     latest = post_range_bars[-1]
     current_vwap = vwap(bars) if use_vwap_filter else None
 
-    if latest.close > orb_high:
+    prior_bars = bars[:-1]  # everything before the latest bar -- today's volume baseline
+    avg_volume = (sum(b.volume for b in prior_bars) / len(prior_bars)) if prior_bars else None
+
+    def volume_confirms() -> bool:
+        if not use_volume_filter or not avg_volume:
+            return True  # no baseline yet, or filter disabled -- don't block on it
+        return latest.volume >= avg_volume * volume_multiplier
+
+    call_trigger = orb_high * (1 + breakout_buffer_pct)
+    put_trigger = orb_low * (1 - breakout_buffer_pct)
+
+    if latest.close > call_trigger:
         if use_vwap_filter and current_vwap is not None and latest.close <= current_vwap:
+            return None
+        if not volume_confirms():
             return None
         return TradeSignal(
             option_type=OptionType.CALL,
@@ -84,8 +113,10 @@ def generate_signal(
             vwap=current_vwap,
         )
 
-    if latest.close < orb_low:
+    if latest.close < put_trigger:
         if use_vwap_filter and current_vwap is not None and latest.close >= current_vwap:
+            return None
+        if not volume_confirms():
             return None
         return TradeSignal(
             option_type=OptionType.PUT,

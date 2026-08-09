@@ -91,7 +91,10 @@ def _generate_signal(
             require_bear_close=config.gameplan_require_bear_close,
         )
         return evaluation.signal
-    return generate_signal(bars[: i + 1], config.market_open, config.orb_minutes, config.vwap_filter)
+    return generate_signal(
+        bars[: i + 1], config.market_open, config.orb_minutes, config.vwap_filter,
+        config.volume_filter, config.volume_multiplier, config.breakout_buffer_pct,
+    )
 
 
 def simulate_day(

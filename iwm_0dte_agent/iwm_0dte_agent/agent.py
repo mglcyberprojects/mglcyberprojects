@@ -98,7 +98,10 @@ def _generate_signal(
             notifier.alert(f"Gameplan: resistance broken (close above rejection zone high {gameplan_zones.reject_high:g})")
         return evaluation.signal
 
-    return generate_signal(bars, config.market_open, config.orb_minutes, config.vwap_filter)
+    return generate_signal(
+        bars, config.market_open, config.orb_minutes, config.vwap_filter,
+        config.volume_filter, config.volume_multiplier, config.breakout_buffer_pct,
+    )
 
 
 def _try_open_position(

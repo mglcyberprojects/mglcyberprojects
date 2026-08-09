@@ -42,7 +42,7 @@ def test_generate_signal_call_breakout_no_vwap_filter():
         bar(10, 100.8, 101.5, 98.5, 99.0),
         bar(15, 99.0, 103, 99.0, 102.5),  # breaks above ORB high (102)
     ]
-    signal = generate_signal(bars, MARKET_OPEN, orb_minutes=15, use_vwap_filter=False)
+    signal = generate_signal(bars, MARKET_OPEN, orb_minutes=15, use_vwap_filter=False, use_volume_filter=False)
     assert signal is not None
     assert signal.option_type == OptionType.CALL
 
@@ -54,7 +54,7 @@ def test_generate_signal_put_breakdown():
         bar(10, 100.8, 101.5, 98.5, 99.0),
         bar(15, 99.0, 99.0, 97.0, 97.5),  # breaks below ORB low (98.5)
     ]
-    signal = generate_signal(bars, MARKET_OPEN, orb_minutes=15, use_vwap_filter=False)
+    signal = generate_signal(bars, MARKET_OPEN, orb_minutes=15, use_vwap_filter=False, use_volume_filter=False)
     assert signal is not None
     assert signal.option_type == OptionType.PUT
 
@@ -77,12 +77,81 @@ def test_generate_signal_vwap_filter_blocks_weak_breakout():
         bar(10, 100.8, 101.5, 98.5, 99.0, v=10000),
         bar(15, 99.0, 102.1, 99.0, 102.05, v=10),  # tiny volume breakout, VWAP still ~100
     ]
-    signal_with_filter = generate_signal(bars, MARKET_OPEN, orb_minutes=15, use_vwap_filter=True)
-    signal_without_filter = generate_signal(bars, MARKET_OPEN, orb_minutes=15, use_vwap_filter=False)
+    signal_with_filter = generate_signal(
+        bars, MARKET_OPEN, orb_minutes=15, use_vwap_filter=True, use_volume_filter=False, breakout_buffer_pct=0.0,
+    )
+    signal_without_filter = generate_signal(
+        bars, MARKET_OPEN, orb_minutes=15, use_vwap_filter=False, use_volume_filter=False, breakout_buffer_pct=0.0,
+    )
     assert signal_without_filter is not None
     # VWAP across all bars sits within the breakout range here, so the filtered
     # version should either agree or be strictly more conservative (None).
     assert signal_with_filter is None or signal_with_filter.option_type == signal_without_filter.option_type
+
+
+def test_generate_signal_volume_filter_blocks_thin_breakout():
+    bars = [
+        bar(0, 100, 101, 99, 100.5, v=1000),
+        bar(5, 100.5, 102, 100, 100.8, v=1000),
+        bar(10, 100.8, 101.5, 98.5, 99.0, v=1000),
+        bar(15, 99.0, 103, 99.0, 102.5, v=1000),  # breaks out, but same volume as the average -- not 1.5x
+    ]
+    blocked = generate_signal(
+        bars, MARKET_OPEN, orb_minutes=15, use_vwap_filter=False, use_volume_filter=True,
+        volume_multiplier=1.5, breakout_buffer_pct=0.0,
+    )
+    assert blocked is None
+
+    allowed = generate_signal(
+        bars, MARKET_OPEN, orb_minutes=15, use_vwap_filter=False, use_volume_filter=False, breakout_buffer_pct=0.0,
+    )
+    assert allowed is not None
+
+
+def test_generate_signal_volume_filter_allows_high_volume_breakout():
+    bars = [
+        bar(0, 100, 101, 99, 100.5, v=1000),
+        bar(5, 100.5, 102, 100, 100.8, v=1000),
+        bar(10, 100.8, 101.5, 98.5, 99.0, v=1000),
+        bar(15, 99.0, 103, 99.0, 102.5, v=2000),  # 2x the average of the prior bars
+    ]
+    signal = generate_signal(
+        bars, MARKET_OPEN, orb_minutes=15, use_vwap_filter=False, use_volume_filter=True,
+        volume_multiplier=1.5, breakout_buffer_pct=0.0,
+    )
+    assert signal is not None
+    assert signal.option_type == OptionType.CALL
+
+
+def test_generate_signal_breakout_buffer_blocks_marginal_breakout():
+    bars = [
+        bar(0, 100, 101, 99, 100.5),
+        bar(5, 100.5, 102, 100, 100.8),
+        bar(10, 100.8, 101.5, 98.5, 99.0),
+        bar(15, 99.0, 102.1, 99.0, 102.05),  # clears ORB high (102) by less than 0.1%
+    ]
+    blocked = generate_signal(
+        bars, MARKET_OPEN, orb_minutes=15, use_vwap_filter=False, use_volume_filter=False, breakout_buffer_pct=0.001,
+    )
+    assert blocked is None
+
+    allowed = generate_signal(
+        bars, MARKET_OPEN, orb_minutes=15, use_vwap_filter=False, use_volume_filter=False, breakout_buffer_pct=0.0,
+    )
+    assert allowed is not None
+
+
+def test_generate_signal_breakout_buffer_applies_to_put_side_too():
+    bars = [
+        bar(0, 100, 101, 99, 100.5),
+        bar(5, 100.5, 102, 100, 100.8),
+        bar(10, 100.8, 101.5, 98.5, 99.0),
+        bar(15, 99.0, 99.0, 98.4, 98.45),  # clears ORB low (98.5) by less than 0.1%
+    ]
+    blocked = generate_signal(
+        bars, MARKET_OPEN, orb_minutes=15, use_vwap_filter=False, use_volume_filter=False, breakout_buffer_pct=0.001,
+    )
+    assert blocked is None
 
 
 def test_vwap_empty_returns_none():

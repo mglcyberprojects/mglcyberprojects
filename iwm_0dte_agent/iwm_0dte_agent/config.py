@@ -52,6 +52,12 @@ class Config:
     vwap_filter: bool = field(default_factory=lambda: os.environ.get("VWAP_FILTER", "true").lower() == "true")
     strike_offset: int = field(default_factory=lambda: _env_int("STRIKE_OFFSET", 0))  # 0 = ATM
 
+    # Additional ORB confirming filters -- each cuts signal frequency for
+    # (hopefully) higher quality; see strategy.generate_signal()'s docstring.
+    volume_filter: bool = field(default_factory=lambda: os.environ.get("VOLUME_FILTER", "true").lower() == "true")
+    volume_multiplier: float = field(default_factory=lambda: _env_float("VOLUME_MULTIPLIER", 1.5))
+    breakout_buffer_pct: float = field(default_factory=lambda: _env_float("BREAKOUT_BUFFER_PCT", 0.001))
+
     # Small-account smoke-test mode: instead of strike_offset/risk-% sizing,
     # picks the cheapest strike at least otm_min_discount_pct below the ATM
     # contract's ask, and buys exactly 1 contract if it fits the account's

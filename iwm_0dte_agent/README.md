@@ -56,19 +56,35 @@ sizing, confirmation gate, and hard-exit handling described below; only the
 
 ### Opening Range Breakout (`STRATEGY=orb`, default)
 
-With an optional VWAP trend filter:
+With optional VWAP, volume, and breakout-buffer confirming filters:
 
 1. The first `ORB_MINUTES` (default 15) of the session establishes a
    high/low range.
-2. A close above the range high — and above session VWAP, if the filter is
-   on — signals a **call**. A close below the range low (and below VWAP)
-   signals a **put**.
+2. A close above the range high signals a **call**, below the range low
+   signals a **put** — subject to three independently-toggleable filters,
+   each trading signal frequency for signal quality:
+   - **VWAP** (`VWAP_FILTER`, default on): the close must be on the
+     correct side of session VWAP too.
+   - **Volume** (`VOLUME_FILTER`, default on): the breakout bar's volume
+     must beat `VOLUME_MULTIPLIER` (default 1.5) times the average volume
+     of every bar so far that day — filters out breakouts on unconvincing
+     (thin) participation.
+   - **Breakout buffer** (`BREAKOUT_BUFFER_PCT`, default 0.001 = 0.1%):
+     the close must clear the level by this fraction, not just tick
+     through it by any amount — cuts down on breakouts that immediately
+     fail back into the range.
 3. Only one position is held at a time, capped at `MAX_TRADES_PER_DAY`
    entries per day.
 4. Every position carries a stop loss and profit target expressed as a
    percentage of the premium paid, and is force-exited at `HARD_EXIT` time
    regardless of P&L, to avoid holding 0DTE contracts into the final
    minutes before expiration.
+
+All three filters apply in both paper and `--live` mode, and are replayed
+identically in `backtest.py` since it reuses this exact function — so
+`python -m iwm_0dte_agent.backtest` is the way to compare signal frequency
+and win rate with a filter on vs. off before trusting a change with real
+money. Set any of them to `false`/`0` in `.env` to turn it off.
 
 See `iwm_0dte_agent/strategy.py` for the exact logic — it's pure functions
 with no I/O, so it's easy to read and to unit test.

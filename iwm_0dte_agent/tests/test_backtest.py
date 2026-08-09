@@ -18,6 +18,7 @@ def make_config(**overrides) -> Config:
         market_open=dt.time(9, 30),
         orb_minutes=15,
         vwap_filter=True,
+        volume_filter=False,  # these tests use flat volume bars, not testing this filter
         stop_loss_pct=0.10,     # loose enough that 5 min of pure theta decay won't trip it
         profit_target_pct=5.0,  # high enough that it won't spuriously trip either
         hard_exit=dt.time(9, 50),
