@@ -69,22 +69,25 @@ _STATUS_COMMANDS = {"/status", "/positions"}
 def _format_status(status: AgentStatus) -> str:
     now_str = dt.datetime.now().strftime("%I:%M:%S %p").lstrip("0")
     lines = [f"📊 <b>Status</b> · as of {_esc(now_str)}", ""]
-    if status.position is not None:
-        p = status.position
-        direction_icon = "📈" if p.contract.option_type == OptionType.CALL else "📉"
-        pnl_icon = "🟢" if p.pnl_dollars >= 0 else "🔴"
-        lines += [
-            "<b>Open position:</b>",
-            f"{direction_icon} <b>{_esc(p.contract.option_type.value.upper())}</b> "
-            f"{_esc(p.contract.symbol)} ${p.contract.strike:g} · exp {_esc(p.contract.expiration)}",
-            f"Qty: {p.quantity} @ entry ${p.entry_price:.2f}",
-            f"Current bid: ${p.current_bid:.2f}",
-            f"{pnl_icon} Unrealized P&L: <b>{p.pnl_pct:+.1f}%</b> (${p.pnl_dollars:+.2f})",
-            f"Stop loss: ${p.stop_loss_price:.2f} · Profit target: ${p.profit_target_price:.2f}",
-            "",
-        ]
+
+    if status.positions:
+        multiple = len(status.positions) > 1
+        lines.append(f"<b>Open positions ({len(status.positions)}):</b>")
+        for i, p in enumerate(status.positions, start=1):
+            direction_icon = "📈" if p.contract.option_type == OptionType.CALL else "📉"
+            pnl_icon = "🟢" if p.pnl_dollars >= 0 else "🔴"
+            prefix = f"{i}. " if multiple else ""
+            lines += [
+                f"{prefix}{direction_icon} <b>{_esc(p.contract.option_type.value.upper())}</b> "
+                f"{_esc(p.contract.symbol)} ${p.contract.strike:g} · exp {_esc(p.contract.expiration)}",
+                f"Qty: {p.quantity} @ entry ${p.entry_price:.2f}",
+                f"Current bid: ${p.current_bid:.2f}",
+                f"{pnl_icon} Unrealized P&L: <b>{p.pnl_pct:+.1f}%</b> (${p.pnl_dollars:+.2f})",
+                f"Stop loss: ${p.stop_loss_price:.2f} · Profit target: ${p.profit_target_price:.2f}",
+                "",
+            ]
     else:
-        lines += ["No open position.", ""]
+        lines += ["No open positions.", ""]
 
     lines.append(f"Buying power: ${status.buying_power:,.2f}")
     lines.append(

@@ -56,10 +56,10 @@ def test_build_agent_status_with_open_position_computes_unrealized_pnl():
 
     status = _build_agent_status(position, broker, risk, Config(max_trades_per_day=2))
 
-    assert status.position is not None
-    assert status.position.current_bid == 3.00
-    assert status.position.pnl_pct == 50.0  # (3.00 - 2.00) / 2.00 * 100
-    assert status.position.pnl_dollars == 300.0  # (3.00 - 2.00) * 3 * 100
+    assert len(status.positions) == 1
+    assert status.positions[0].current_bid == 3.00
+    assert status.positions[0].pnl_pct == 50.0  # (3.00 - 2.00) / 2.00 * 100
+    assert status.positions[0].pnl_dollars == 300.0  # (3.00 - 2.00) * 3 * 100
     assert status.buying_power == 25_000.0
     assert status.trades_today == 1
     assert status.max_trades_per_day == 2
@@ -72,7 +72,7 @@ def test_build_agent_status_with_no_position():
 
     status = _build_agent_status(None, broker, risk, Config())
 
-    assert status.position is None
+    assert status.positions == []
     assert broker.get_option_quote_calls == 0  # no position -> no quote fetch needed
 
 

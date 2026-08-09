@@ -269,11 +269,14 @@ approval — button presses from any other chat are logged and ignored (same
 rule for the `/status` command and Refresh button below).
 
 **On-demand status:** send `/status` or `/positions` to the chat any time to
-get a snapshot — open position (contract, entry price, live bid, unrealized
-P&L, stop loss/profit target) or "No open position", plus buying power,
-trades today, and today's realized P&L. The reply has a **🔄 Refresh**
-button that re-fetches everything and edits the same message in place,
-rather than sending a new one each time.
+get a snapshot — every open position (contract, entry price, live bid,
+unrealized P&L, stop loss/profit target) or "No open positions", plus
+buying power, trades today, and today's realized P&L. Rendered as a list:
+today the agent only ever holds one position at a time (see above), so it's
+usually one entry or none, but the reply is ready to show more if that
+changes. The reply has a **🔄 Refresh** button that re-fetches everything
+and edits the same message in place, rather than sending a new one each
+time.
 
 This is checked once per agent loop iteration, not instantly — a `/status`
 command or Refresh tap is picked up on the next cycle, so expect up to

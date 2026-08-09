@@ -16,15 +16,16 @@ def _print_status(status: AgentStatus) -> None:
     print("\n" + "-" * 60)
     print("STATUS")
     print("-" * 60)
-    if status.position is not None:
-        p = status.position
-        print(f"  {p.contract.option_type.value.upper()} {p.contract.symbol} "
-              f"${p.contract.strike:g} exp {p.contract.expiration}")
-        print(f"  Qty {p.quantity} @ entry ${p.entry_price:.2f}, current bid ${p.current_bid:.2f}")
-        print(f"  Unrealized P&L: {p.pnl_pct:+.1f}% (${p.pnl_dollars:+.2f})")
-        print(f"  Stop loss ${p.stop_loss_price:.2f} / profit target ${p.profit_target_price:.2f}")
+    if status.positions:
+        print(f"  Open positions ({len(status.positions)}):")
+        for p in status.positions:
+            print(f"  - {p.contract.option_type.value.upper()} {p.contract.symbol} "
+                  f"${p.contract.strike:g} exp {p.contract.expiration}")
+            print(f"    Qty {p.quantity} @ entry ${p.entry_price:.2f}, current bid ${p.current_bid:.2f}")
+            print(f"    Unrealized P&L: {p.pnl_pct:+.1f}% (${p.pnl_dollars:+.2f})")
+            print(f"    Stop loss ${p.stop_loss_price:.2f} / profit target ${p.profit_target_price:.2f}")
     else:
-        print("  No open position.")
+        print("  No open positions.")
     print(f"  Buying power: ${status.buying_power:,.2f}")
     print(f"  Trades today: {status.trades_today}/{status.max_trades_per_day}  "
           f"Realized P&L today: ${status.realized_pnl_today:+.2f}")

@@ -246,15 +246,15 @@ def test_poll_status_requests_ignores_refresh_from_wrong_chat():
 
 
 def _make_status(with_position=True, pnl_bid=3.00):
-    position = None
+    positions = []
     if with_position:
         contract = OptionContract("IWM", 228.0, OptionType.CALL, "2026-08-10", pnl_bid, pnl_bid + 0.05, pnl_bid, "instr-1")
-        position = PositionStatus(
+        positions.append(PositionStatus(
             contract=contract, quantity=3, entry_price=2.00, current_bid=pnl_bid,
             stop_loss_price=1.00, profit_target_price=4.00,
-        )
+        ))
     return AgentStatus(
-        position=position, buying_power=25_000.0, trades_today=1, max_trades_per_day=2,
+        positions=positions, buying_power=25_000.0, trades_today=1, max_trades_per_day=2,
         realized_pnl_today=50.0,
     )
 
@@ -290,7 +290,34 @@ def test_post_status_shows_no_position_line_when_flat():
     notifier.post_status(_make_status(with_position=False))
 
     _, params = fake_call.calls[0]
-    assert "No open position." in params["text"]
+    assert "No open positions." in params["text"]
+
+
+def test_post_status_numbers_entries_when_multiple_positions_open():
+    # Today the agent only ever opens one position at a time, but the
+    # render layer is list-based and ready for that changing -- this
+    # exercises the >1 path directly rather than relying on that happening.
+    notifier = make_notifier()
+    fake_call = FakeCall()
+    notifier._call = fake_call
+
+    call_contract = OptionContract("IWM", 228.0, OptionType.CALL, "2026-08-10", 3.00, 3.05, 3.02, "instr-call")
+    put_contract = OptionContract("IWM", 224.0, OptionType.PUT, "2026-08-10", 1.20, 1.25, 1.22, "instr-put")
+    status = AgentStatus(
+        positions=[
+            PositionStatus(call_contract, 3, 2.00, 3.00, 1.00, 4.00),
+            PositionStatus(put_contract, 2, 1.50, 1.20, 0.75, 3.00),
+        ],
+        buying_power=25_000.0, trades_today=2, max_trades_per_day=2, realized_pnl_today=0.0,
+    )
+
+    notifier.post_status(status)
+
+    _, params = fake_call.calls[0]
+    text = params["text"]
+    assert "Open positions (2):" in text
+    assert "1. 📈 <b>CALL</b> IWM $228" in text
+    assert "2. 📉 <b>PUT</b> IWM $224" in text
 
 
 def test_post_status_pnl_icon_is_red_when_losing():

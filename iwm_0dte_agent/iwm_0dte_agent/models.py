@@ -119,9 +119,15 @@ class PositionStatus:
 class AgentStatus:
     """Everything an on-demand status/refresh reply needs to render --
     broker- and notifier-agnostic, built by agent.py and rendered into
-    channel-specific text by whichever Notifier is in use."""
+    channel-specific text by whichever Notifier is in use.
 
-    position: PositionStatus | None
+    positions is a list (today always length 0 or 1, since the agent only
+    ever holds one position at a time by design -- see README.md) rather
+    than a single optional field, so /positions renders as a list and is
+    ready if that one-at-a-time design ever changes, without another
+    render-layer rewrite."""
+
+    positions: list[PositionStatus]
     buying_power: float
     trades_today: int
     max_trades_per_day: int

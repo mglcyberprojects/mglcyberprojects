@@ -256,16 +256,16 @@ def _try_close_position(
 def _build_agent_status(
     position: OpenPosition | None, broker: Broker, risk: RiskManager, config: Config,
 ) -> AgentStatus:
-    position_status = None
+    positions: list[PositionStatus] = []
     if position is not None:
         quote = broker.get_option_quote(position.contract.contract_id)
-        position_status = PositionStatus(
+        positions.append(PositionStatus(
             contract=position.contract, quantity=position.quantity, entry_price=position.entry_price,
             current_bid=quote.bid, stop_loss_price=position.stop_loss_price,
             profit_target_price=position.profit_target_price,
-        )
+        ))
     return AgentStatus(
-        position=position_status, buying_power=broker.get_buying_power(),
+        positions=positions, buying_power=broker.get_buying_power(),
         trades_today=risk.trades_today, max_trades_per_day=config.max_trades_per_day,
         realized_pnl_today=risk.realized_pnl_today,
     )
