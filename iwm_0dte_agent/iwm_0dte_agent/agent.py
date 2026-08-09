@@ -321,6 +321,7 @@ def run(live: bool, once: bool, config: Config = CONFIG) -> None:
     mode = "LIVE" if live else "paper"
     logger.info("Agent started (%s mode, %s strategy) for %s", mode, config.strategy, config.symbol)
     notifier.alert(f"Agent started ({mode} mode, {config.strategy} strategy) for {config.symbol}")
+    notifier.show_positions_shortcut()
 
     gameplan_state: GameplanState | None = None
     gameplan_zones: GameplanZones | None = None

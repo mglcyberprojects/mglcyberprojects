@@ -278,6 +278,12 @@ changes. The reply has a **🔄 Refresh** button that re-fetches everything
 and edits the same message in place, rather than sending a new one each
 time.
 
+At startup the agent also sends a persistent **📊 Positions** button that
+replaces your chat's normal keyboard — it stays there under the message box
+across every message from then on, so checking positions doesn't require
+remembering or retyping `/status`. Tapping it just sends "📊 Positions" as
+an ordinary message, recognized the same way as typing the command.
+
 This is checked once per agent loop iteration, not instantly — a `/status`
 command or Refresh tap is picked up on the next cycle, so expect up to
 `POLL_SECONDS` (60s by default) of latency, not a live push.

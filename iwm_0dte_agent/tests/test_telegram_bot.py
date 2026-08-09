@@ -343,3 +343,29 @@ def test_update_status_edits_message_text_in_place():
     assert params["message_id"] == 777
     assert params["parse_mode"] == "HTML"
     assert "<b>Status</b>" in params["text"]
+
+
+def test_show_positions_shortcut_sends_persistent_reply_keyboard():
+    notifier = make_notifier()
+    fake_call = FakeCall()
+    notifier._call = fake_call
+
+    notifier.show_positions_shortcut()
+
+    method, params = fake_call.calls[0]
+    assert method == "sendMessage"
+    keyboard = params["reply_markup"]["keyboard"]
+    assert keyboard == [[{"text": "📊 Positions"}]]
+    assert params["reply_markup"]["resize_keyboard"] is True
+    assert params["reply_markup"]["is_persistent"] is True
+
+
+def test_poll_status_requests_recognizes_positions_button_tap():
+    # Tapping the persistent keyboard button just sends its label as an
+    # ordinary text message -- same recognition path as /status.
+    notifier = make_notifier()
+    notifier._call = lambda method, **params: [_status_update(1, text="📊 Positions")]
+
+    requests = notifier.poll_status_requests()
+
+    assert len(requests) == 1 and requests[0].kind == "new"

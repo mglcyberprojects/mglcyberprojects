@@ -63,7 +63,8 @@ def _icon_for(text: str) -> str:
     return "ℹ️"
 
 
-_STATUS_COMMANDS = {"/status", "/positions"}
+_POSITIONS_BUTTON_TEXT = "📊 Positions"
+_STATUS_COMMANDS = {"/status", "/positions", _POSITIONS_BUTTON_TEXT.lower()}
 
 
 def _format_status(status: AgentStatus) -> str:
@@ -349,3 +350,26 @@ class TelegramNotifier:
             )
         except Exception:
             logger.exception("Failed to update Telegram status message")
+
+    def show_positions_shortcut(self) -> None:
+        # A persistent custom keyboard (not an inline button attached to one
+        # message) -- it replaces the chat's normal keyboard with a single
+        # "Positions" button that stays there across every message until
+        # changed, so there's always a tap-to-check-positions option
+        # available without hunting for a specific message or retyping
+        # /status. Tapping it just sends its label as an ordinary text
+        # message, which poll_status_requests() recognizes the same as
+        # /status -- no separate handling needed on the receiving end.
+        keyboard = {
+            "keyboard": [[{"text": _POSITIONS_BUTTON_TEXT}]],
+            "resize_keyboard": True,
+            "is_persistent": True,
+        }
+        try:
+            self._call(
+                "sendMessage", chat_id=self._chat_id,
+                text="Tap the button below any time to check open positions.",
+                reply_markup=keyboard,
+            )
+        except Exception:
+            logger.exception("Failed to send Telegram positions button")

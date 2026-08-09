@@ -42,6 +42,11 @@ class TerminalNotifier:
         # poll for the way Telegram mode has, so this is always empty.
         return []
 
+    def show_positions_shortcut(self) -> None:
+        # No equivalent to a persistent chat keyboard button in terminal
+        # mode -- nothing to do here.
+        pass
+
     def post_status(self, status: AgentStatus) -> None:
         _print_status(status)
 

@@ -42,6 +42,8 @@ class Notifier(Protocol):
 
     def update_status(self, message_id: int, status: AgentStatus) -> None: ...
 
+    def show_positions_shortcut(self) -> None: ...
+
 
 def build_notifier(config: Config) -> Notifier:
     if config.telegram_bot_token and config.telegram_chat_id:
