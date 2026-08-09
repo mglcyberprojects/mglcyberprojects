@@ -31,7 +31,7 @@ from .market_data import download_bars
 from .models import Bar, OptionType, TradeSignal
 from .pricing import synthetic_chain
 from .risk import RiskManager
-from .strategy import generate_signal, select_cheap_otm_strike, select_strike
+from .strategy import generate_signal, select_strike
 
 STARTING_BUYING_POWER = 25_000.0
 
@@ -103,7 +103,6 @@ def _generate_signal(
 
 def simulate_day(
     bars: list[Bar], config: Config = CONFIG, gameplan_zones: GameplanZones | None = None,
-    starting_buying_power: float = STARTING_BUYING_POWER,
 ) -> DayResult:
     """Replays one trading day's bars through the live strategy/risk logic.
 
@@ -112,19 +111,19 @@ def simulate_day(
     `gameplan_zones` is only used when config.strategy == "gameplan"; a
     fresh GameplanState is created per day, matching its daily reset.
 
-    Also mirrors agent.py's config.cheap_otm_mode branch: strike selection
-    and position sizing follow the same cheap-OTM/1-contract-if-affordable
-    path when it's on. starting_buying_power defaults to $25,000 (a normal
-    account) -- pass something like 50 to get numbers that actually reflect
-    a small CHEAP_OTM_MODE account instead of testing the strategy logic at
-    a size nothing about your real account resembles.
+    Always sizes against STARTING_BUYING_POWER ($25,000) using normal ATM
+    select_strike()/position_size() -- config.cheap_otm_mode is deliberately
+    NOT honored here, so this measures strategy/signal quality in isolation
+    from account-size effects. CHEAP_OTM_MODE's cheap-far-OTM premiums swing
+    wildly in percentage terms on tiny absolute dollar amounts, which was
+    swamping any read on whether the confluence filters actually help.
     """
     if not bars:
         return DayResult(date=dt.date.today(), skipped_reason="no data")
 
     day = bars[0].timestamp.date()
     risk = RiskManager(config=config)
-    buying_power = starting_buying_power
+    buying_power = STARTING_BUYING_POWER
     result = DayResult(date=day)
     position: dict | None = None
     gameplan_state = GameplanState() if config.strategy == "gameplan" else None
@@ -169,18 +168,10 @@ def simulate_day(
 
         tte = _years_to_expiry(bar.timestamp, config.market_close)
         chain = synthetic_chain(config.symbol, signal.underlying_price, day.isoformat(), tte)
-        if config.cheap_otm_mode:
-            contract = select_cheap_otm_strike(
-                chain, signal.option_type, signal.underlying_price, config.otm_min_discount_pct
-            )
-        else:
-            contract = select_strike(chain, signal.option_type, signal.underlying_price, config.strike_offset)
+        contract = select_strike(chain, signal.option_type, signal.underlying_price, config.strike_offset)
         if contract is None or contract.ask <= 0:
             continue
-        if config.cheap_otm_mode:
-            quantity = risk.cheap_otm_position_size(buying_power, contract.ask)
-        else:
-            quantity = risk.position_size(buying_power, contract.ask)
+        quantity = risk.position_size(buying_power, contract.ask)
         if quantity <= 0:
             continue
 
@@ -251,7 +242,7 @@ def _write_csv(results: list[DayResult], path: str) -> None:
 
 def run_backtest(
     days: int, interval: str = "5m", config: Config = CONFIG, out_csv: str = "backtest_results.csv",
-    gameplan_zones: GameplanZones | None = None, starting_buying_power: float = STARTING_BUYING_POWER,
+    gameplan_zones: GameplanZones | None = None,
 ) -> list[DayResult]:
     by_day = fetch_historical_bars(config.symbol, days, interval)
     if not by_day:
@@ -262,10 +253,7 @@ def run_backtest(
             f"trusting a '0 trades' result.\n"
         )
         return []
-    results = [
-        simulate_day(bars, config, gameplan_zones, starting_buying_power)
-        for _day, bars in sorted(by_day.items())
-    ]
+    results = [simulate_day(bars, config, gameplan_zones) for _day, bars in sorted(by_day.items())]
     _print_report(results)
     _write_csv(results, out_csv)
     print(f"Full trade log written to {out_csv}")
@@ -284,13 +272,6 @@ def main() -> None:
     parser.add_argument("--hold-high", type=float, help="Gameplan strategy: hold zone high")
     parser.add_argument("--reject-low", type=float, help="Gameplan strategy: rejection zone low")
     parser.add_argument("--reject-high", type=float, help="Gameplan strategy: rejection zone high")
-    parser.add_argument(
-        "--buying-power", type=float, default=STARTING_BUYING_POWER,
-        help=f"Starting buying power for the simulated account (default {STARTING_BUYING_POWER:g}). "
-             "Pass something like 50 to get numbers that reflect a small CHEAP_OTM_MODE account -- "
-             "at the default $25,000, cheap_otm_position_size() can always afford 1 contract, so "
-             "CHEAP_OTM_MODE's 'does this fit my account' behavior never actually gets exercised.",
-    )
     args = parser.parse_args()
 
     config = CONFIG
@@ -313,10 +294,7 @@ def main() -> None:
             reject_low=args.reject_low, reject_high=args.reject_high,
         )
 
-    run_backtest(
-        days=args.days, interval=args.interval, config=config, out_csv=args.out,
-        gameplan_zones=gameplan_zones, starting_buying_power=args.buying_power,
-    )
+    run_backtest(days=args.days, interval=args.interval, config=config, out_csv=args.out, gameplan_zones=gameplan_zones)
 
 
 if __name__ == "__main__":
