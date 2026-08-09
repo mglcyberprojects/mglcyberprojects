@@ -25,16 +25,24 @@ python -m iwm_0dte_agent.backtest --days 14
     --interval 1m|2m|5m|15m|30m   Bar size (default 5m; 1m only ~7 days back)
     --out FILE.csv                 Where to write the full trade log (default backtest_results.csv)
     --strategy orb|gameplan        Override STRATEGY from .env for this run only
+    --buying-power N                Starting account size (default 25000). CHEAP_OTM_MODE's
+                                     strike/sizing logic IS honored in the backtest, but at the
+                                     $25,000 default a contract is basically always affordable --
+                                     pass --buying-power 50 to get numbers that actually match a
+                                     small live account.
 
     Gameplan backtest (all four required together):
     python -m iwm_0dte_agent.backtest --days 14 --strategy gameplan \
         --hold-low 228.50 --hold-high 229.20 --reject-low 231.00 --reject-high 232.50
 
-    Always sizes against a fixed $25,000 with normal ATM strike selection --
-    CHEAP_OTM_MODE is deliberately NOT honored here, so the backtest measures
-    strategy/signal quality in isolation from account-size effects (cheap
-    far-OTM premiums swing wildly in % terms on tiny $ amounts, which swamps
-    any read on whether a filter/parameter change actually helped).
+    CHEAP_OTM_MODE backtest matching a $50 live account:
+    python -m iwm_0dte_agent.backtest --days 14 --buying-power 50
+
+    NOTE: at small --buying-power sizes, cheap far-OTM premiums swing wildly
+    in % terms on tiny $ amounts, which can swamp the read on whether some
+    OTHER change (a filter, a parameter tweak) actually helped. Isolate
+    strategy/signal changes at the $25,000 default first; use --buying-power
+    separately to judge CHEAP_OTM_MODE sizing at your real account size.
 
 CAVEAT: option prices in the backtest are synthetic Black-Scholes (flat 20%
 IV), not real historical quotes -- treat results as a check on strategy

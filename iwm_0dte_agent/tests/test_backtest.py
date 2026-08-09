@@ -107,3 +107,52 @@ def test_simulate_day_gameplan_strategy_without_zones_never_trades():
     result = simulate_day(bars, config, gameplan_zones=None)
 
     assert result.trades == []
+
+
+# CHEAP_OTM_MODE bars: opening range gives orb_high=102, then a strong
+# breakout to a close of 104 at 9:45. At that spot/tte, the synthetic chain
+# prices the ATM (104) call at ~0.23 ask -- select_cheap_otm_strike (70%
+# discount) walks out to strike 105 (~0.02 ask), the first one cheap enough.
+_CHEAP_OTM_BARS = [
+    bar(9, 30, 100, 101, 99, 100.5),
+    bar(9, 35, 100.5, 102, 100, 100.8),
+    bar(9, 40, 100.8, 101.5, 98.5, 99.0),
+    bar(9, 45, 99.0, 104, 99.0, 104.0),  # breaks well above the ORB high (102)
+    bar(9, 50, 104.0, 104.2, 103.8, 104.0),  # flat -- hard exit at 9:50 fires here
+]
+
+
+def test_simulate_day_cheap_otm_mode_picks_far_strike_and_sizes_to_one_contract():
+    config = make_config(vwap_filter=False, cheap_otm_mode=True, otm_min_discount_pct=0.70)
+
+    result = simulate_day(_CHEAP_OTM_BARS, config, starting_buying_power=50.0)
+
+    assert len(result.trades) == 1
+    trade = result.trades[0]
+    assert trade.option_type == OptionType.CALL
+    assert trade.strike == 105.0  # not the ATM (104) strike select_strike would have picked
+    assert trade.quantity == 1
+    assert trade.entry_price == 0.02
+
+
+def test_simulate_day_cheap_otm_mode_skips_when_unaffordable():
+    config = make_config(vwap_filter=False, cheap_otm_mode=True, otm_min_discount_pct=0.70)
+
+    # Even the cheapest strike ($0.02 ask -> $2/contract) doesn't fit $1 of
+    # buying power -- cheap_otm_position_size() should size to 0 and skip,
+    # not fall back to normal risk_pct_per_trade sizing.
+    result = simulate_day(_CHEAP_OTM_BARS, config, starting_buying_power=1.0)
+
+    assert result.trades == []
+
+
+def test_simulate_day_normal_mode_still_picks_atm_strike_for_comparison():
+    # Same bars, CHEAP_OTM_MODE off -- confirms the two modes genuinely
+    # produce different strikes/sizing rather than cheap_otm_mode being a
+    # no-op in the backtester.
+    config = make_config(vwap_filter=False, cheap_otm_mode=False)
+
+    result = simulate_day(_CHEAP_OTM_BARS, config, starting_buying_power=25_000.0)
+
+    assert len(result.trades) == 1
+    assert result.trades[0].strike == 104.0  # ATM, from select_strike with strike_offset=0

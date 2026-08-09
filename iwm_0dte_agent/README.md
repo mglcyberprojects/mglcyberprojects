@@ -349,15 +349,22 @@ python -m iwm_0dte_agent.backtest --strategy gameplan --days 7 \
     --hold-low 228.50 --hold-high 229.20 --reject-low 231.00 --reject-high 232.50
 ```
 
-The simulated account always sizes against $25,000 using normal ATM strike
-selection, regardless of `CHEAP_OTM_MODE` in `.env` -- deliberately not
-honored here, so the backtest measures strategy/signal quality in
-isolation from account-size effects. `CHEAP_OTM_MODE`'s cheap-far-OTM
-premiums swing wildly in percentage terms on tiny absolute dollar amounts,
-which swamps any read on whether a given change (a filter, a parameter
-tweak) actually helped. Validate signal quality here first, then judge
-`CHEAP_OTM_MODE` sizing separately with paper trading at your real account
-size.
+The simulated account starts with $25,000 buying power by default,
+regardless of `CHEAP_OTM_MODE` in `.env` — that setting's strike selection
+and 1-contract-if-affordable sizing *are* honored in the backtest, but at
+$25,000 a contract is basically always affordable, so the "does this fit my
+account" part of `CHEAP_OTM_MODE` never actually gets exercised. Pass
+`--buying-power` to test against a size that matches your real account:
+```bash
+python -m iwm_0dte_agent.backtest --days 7 --buying-power 50
+```
+Worth noting when comparing runs: at small buying-power sizes, cheap
+far-OTM premiums swing wildly in percentage terms on tiny absolute dollar
+amounts, which can swamp the read on whether some other change (a filter, a
+parameter tweak) actually helped. If you're isolating a strategy/signal
+change specifically, compare at the $25,000 default first; use
+`--buying-power` to separately judge how `CHEAP_OTM_MODE` sizing behaves at
+your real account size.
 
 ## Running unattended on Windows
 
