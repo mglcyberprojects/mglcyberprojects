@@ -99,8 +99,12 @@ def _generate_signal(
         return evaluation.signal
 
     return generate_signal(
-        bars, config.market_open, config.orb_minutes, config.vwap_filter,
-        config.volume_filter, config.volume_multiplier, config.breakout_buffer_pct,
+        bars, config.market_open, config.orb_minutes,
+        use_vwap_filter=config.vwap_filter,
+        use_volume_filter=config.volume_filter,
+        volume_multiplier=config.volume_multiplier,
+        volume_lookback_bars=config.volume_lookback_bars,
+        breakout_buffer_pct=config.breakout_buffer_pct,
     )
 
 

@@ -67,8 +67,15 @@ With optional VWAP, volume, and breakout-buffer confirming filters:
      correct side of session VWAP too.
    - **Volume** (`VOLUME_FILTER`, default on): the breakout bar's volume
      must beat `VOLUME_MULTIPLIER` (default 1.5) times the average volume
-     of every bar so far that day — filters out breakouts on unconvincing
-     (thin) participation.
+     of the last `VOLUME_LOOKBACK_BARS` (default 6) bars — filters out
+     breakouts on unconvincing (thin) participation. Deliberately a
+     trailing window, not an average of every bar since open: the first
+     15-30 minutes of the session is naturally the highest-volume part of
+     the day, so a cumulative average is permanently skewed high right
+     when it matters most (making early, high-conviction breakouts
+     hardest to clear) and drifts low during the midday lull (making
+     late, weaker breakouts easiest to clear) — backwards from the
+     filter's purpose.
    - **Breakout buffer** (`BREAKOUT_BUFFER_PCT`, default 0.001 = 0.1%):
      the close must clear the level by this fraction, not just tick
      through it by any amount — cuts down on breakouts that immediately
@@ -342,6 +349,16 @@ discretionary read each morning the way live/paper trading does):
 ```bash
 python -m iwm_0dte_agent.backtest --strategy gameplan --days 7 \
     --hold-low 228.50 --hold-high 229.20 --reject-low 231.00 --reject-high 232.50
+```
+
+The simulated account starts with $25,000 buying power by default,
+regardless of `CHEAP_OTM_MODE` in `.env` — that setting's strike selection
+and 1-contract-if-affordable sizing *are* honored in the backtest, but at
+$25,000 a contract is basically always affordable, so the "does this fit my
+account" part of `CHEAP_OTM_MODE` never actually gets exercised. Pass
+`--buying-power` to test against a size that matches your real account:
+```bash
+python -m iwm_0dte_agent.backtest --days 7 --buying-power 50
 ```
 
 ## Running unattended on Windows

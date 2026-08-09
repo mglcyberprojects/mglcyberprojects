@@ -55,6 +55,7 @@ def generate_signal(
     use_vwap_filter: bool = True,
     use_volume_filter: bool = True,
     volume_multiplier: float = 1.5,
+    volume_lookback_bars: int = 6,
     breakout_buffer_pct: float = 0.001,
 ) -> TradeSignal | None:
     """Evaluate the latest bar against the opening range, plus three optional
@@ -62,8 +63,16 @@ def generate_signal(
 
     - VWAP: breakout must be on the correct side of session VWAP too.
     - Volume: the breakout bar's volume must beat volume_multiplier x the
-      average volume of every bar so far today -- filters out breakouts on
-      unconvincing (thin) participation.
+      average volume of the last volume_lookback_bars bars -- filters out
+      breakouts on unconvincing (thin) participation. Deliberately a
+      trailing window rather than an average of every bar since open: the
+      first 15-30 minutes of the session are naturally the highest-volume
+      part of the day, so a cumulative average is permanently skewed high
+      right when it matters most (making early, high-conviction breakouts
+      hardest to clear) and drifts low during the midday lull (making late,
+      lower-conviction breakouts easiest to clear) -- backwards from what
+      this filter is supposed to do. A trailing window stays representative
+      of "recent normal" regardless of what time of day it is.
     - Breakout buffer: the close must clear the ORB level by
       breakout_buffer_pct, not just tick through it by any amount -- cuts
       down on immediate-failure breakouts right at the level.
@@ -88,8 +97,9 @@ def generate_signal(
     latest = post_range_bars[-1]
     current_vwap = vwap(bars) if use_vwap_filter else None
 
-    prior_bars = bars[:-1]  # everything before the latest bar -- today's volume baseline
-    avg_volume = (sum(b.volume for b in prior_bars) / len(prior_bars)) if prior_bars else None
+    prior_bars = bars[:-1]  # everything before the latest bar
+    lookback_bars = prior_bars[-volume_lookback_bars:] if volume_lookback_bars > 0 else prior_bars
+    avg_volume = (sum(b.volume for b in lookback_bars) / len(lookback_bars)) if lookback_bars else None
 
     def volume_confirms() -> bool:
         if not use_volume_filter or not avg_volume:

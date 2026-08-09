@@ -123,6 +123,36 @@ def test_generate_signal_volume_filter_allows_high_volume_breakout():
     assert signal.option_type == OptionType.CALL
 
 
+def test_generate_signal_volume_filter_uses_trailing_window_not_full_day_average():
+    # Real bug found from a live backtest comparison: the first 15-30 min of
+    # the session are naturally the highest-volume part of the day. If the
+    # volume baseline were a cumulative average of every bar since open (the
+    # original implementation), that early spike permanently inflates the
+    # bar every later breakout has to clear -- exactly backwards, since it
+    # makes the filter hardest to pass right when good breakouts tend to
+    # happen and easiest to pass during the midday lull. A trailing window
+    # should judge the breakout bar only against *recent* bars, so an early
+    # spike well outside the window shouldn't count against it.
+    bars = [
+        bar(0, 100, 101, 99, 100.5, v=5000),   # opening-range bar with a big volume spike
+        bar(5, 100.5, 102, 100, 100.8, v=1000),
+        bar(10, 100.8, 101.5, 98.5, 99.0, v=1000),
+        bar(15, 99.0, 100.2, 99.5, 100.0, v=1000),  # 6 normal-volume filler bars, well
+        bar(20, 100.0, 100.2, 99.8, 100.0, v=1000),  # clear of the opening spike by the
+        bar(25, 100.0, 100.2, 99.8, 100.0, v=1000),  # time the breakout bar arrives
+        bar(30, 100.0, 100.2, 99.8, 100.0, v=1000),
+        bar(35, 100.0, 100.2, 99.8, 100.0, v=1000),
+        bar(40, 100.0, 100.2, 99.8, 100.0, v=1000),
+        bar(45, 100.0, 103, 100.0, 102.5, v=1600),  # breaks out; 1.6x *recent* volume,
+    ]                                                # but only ~1.1x the full-day average
+    signal = generate_signal(
+        bars, MARKET_OPEN, orb_minutes=15, use_vwap_filter=False, use_volume_filter=True,
+        volume_multiplier=1.5, volume_lookback_bars=6, breakout_buffer_pct=0.0,
+    )
+    assert signal is not None
+    assert signal.option_type == OptionType.CALL
+
+
 def test_generate_signal_breakout_buffer_blocks_marginal_breakout():
     bars = [
         bar(0, 100, 101, 99, 100.5),
