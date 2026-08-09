@@ -108,9 +108,10 @@ Strategy & signal quality:
   VWAP_FILTER=true                  Breakout must be on the correct side of VWAP too
   VOLUME_FILTER=true                Breakout bar's volume must beat VOLUME_MULTIPLIER x the trailing average
   VOLUME_MULTIPLIER=1.5
-  VOLUME_LOOKBACK_BARS=6             Trailing window size for that average (NOT all bars since open --
-                                     the open is naturally highest-volume, so a cumulative average
-                                     would be permanently skewed high right when it matters most)
+  VOLUME_LOOKBACK_BARS=6             Trailing window size for that average, counting only bars after
+                                     the opening range closed (not the range-forming bars, not all
+                                     bars since open -- the open is naturally highest-volume, so
+                                     either would skew the baseline high right when it matters most)
   BREAKOUT_BUFFER_PCT=0.001         Close must clear the level by this fraction (0.1%), not just tick through it
   STRIKE_OFFSET=0                   0 = ATM, N = N strikes further OTM
 

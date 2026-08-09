@@ -63,16 +63,21 @@ def generate_signal(
 
     - VWAP: breakout must be on the correct side of session VWAP too.
     - Volume: the breakout bar's volume must beat volume_multiplier x the
-      average volume of the last volume_lookback_bars bars -- filters out
-      breakouts on unconvincing (thin) participation. Deliberately a
-      trailing window rather than an average of every bar since open: the
-      first 15-30 minutes of the session are naturally the highest-volume
-      part of the day, so a cumulative average is permanently skewed high
-      right when it matters most (making early, high-conviction breakouts
-      hardest to clear) and drifts low during the midday lull (making late,
-      lower-conviction breakouts easiest to clear) -- backwards from what
-      this filter is supposed to do. A trailing window stays representative
-      of "recent normal" regardless of what time of day it is.
+      average volume of the last volume_lookback_bars bars, counting only
+      bars *after* the opening range closed -- filters out breakouts on
+      unconvincing (thin) participation. Two deliberate choices here, both
+      found necessary from a real backtest comparison, not assumed upfront:
+      a trailing window rather than a cumulative average of every bar since
+      open (the first 15-30 minutes of the session is naturally the
+      highest-volume part of the day, so a cumulative average stays
+      permanently skewed high right when it matters most), AND excluding
+      the range-forming bars themselves from that window (they're
+      structurally the highest-volume bars of the day, so for the earliest
+      breakouts -- where a trailing window has nowhere else to look back to
+      yet -- they'd inflate the baseline exactly when a window alone
+      couldn't rescue it). Together these keep the baseline representative
+      of "recent normal trading" regardless of what time of day the
+      breakout happens.
     - Breakout buffer: the close must clear the ORB level by
       breakout_buffer_pct, not just tick through it by any amount -- cuts
       down on immediate-failure breakouts right at the level.
@@ -97,7 +102,13 @@ def generate_signal(
     latest = post_range_bars[-1]
     current_vwap = vwap(bars) if use_vwap_filter else None
 
-    prior_bars = bars[:-1]  # everything before the latest bar
+    # Baseline built only from bars *after* the opening range closed, never
+    # from the range-forming bars themselves -- those are structurally the
+    # highest-volume bars of the day (that's part of why they're used to
+    # form the range) and would otherwise inflate the baseline for exactly
+    # the earliest breakouts, the ones a trailing window alone can't rescue
+    # since there's nothing else to look back on yet.
+    prior_bars = post_range_bars[:-1]
     lookback_bars = prior_bars[-volume_lookback_bars:] if volume_lookback_bars > 0 else prior_bars
     avg_volume = (sum(b.volume for b in lookback_bars) / len(lookback_bars)) if lookback_bars else None
 

@@ -67,15 +67,19 @@ With optional VWAP, volume, and breakout-buffer confirming filters:
      correct side of session VWAP too.
    - **Volume** (`VOLUME_FILTER`, default on): the breakout bar's volume
      must beat `VOLUME_MULTIPLIER` (default 1.5) times the average volume
-     of the last `VOLUME_LOOKBACK_BARS` (default 6) bars — filters out
-     breakouts on unconvincing (thin) participation. Deliberately a
-     trailing window, not an average of every bar since open: the first
-     15-30 minutes of the session is naturally the highest-volume part of
-     the day, so a cumulative average is permanently skewed high right
-     when it matters most (making early, high-conviction breakouts
-     hardest to clear) and drifts low during the midday lull (making
-     late, weaker breakouts easiest to clear) — backwards from the
-     filter's purpose.
+     of the last `VOLUME_LOOKBACK_BARS` (default 6) bars, counting only
+     bars *after* the opening range closed — filters out breakouts on
+     unconvincing (thin) participation. Two deliberate choices here, both
+     found necessary from a real backtest comparison rather than assumed
+     upfront: a trailing window instead of a cumulative average of every
+     bar since open (the first 15-30 minutes of the session is naturally
+     the highest-volume part of the day, so a cumulative average stays
+     permanently skewed high right when it matters most), and excluding
+     the range-forming bars themselves from that window (they're
+     structurally the highest-volume bars of the day, so for the earliest
+     breakouts — where a trailing window has nowhere else to look back to
+     yet — they'd inflate the baseline exactly when the window alone
+     couldn't rescue it).
    - **Breakout buffer** (`BREAKOUT_BUFFER_PCT`, default 0.001 = 0.1%):
      the close must clear the level by this fraction, not just tick
      through it by any amount — cuts down on breakouts that immediately

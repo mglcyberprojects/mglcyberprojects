@@ -94,7 +94,8 @@ def test_generate_signal_volume_filter_blocks_thin_breakout():
         bar(0, 100, 101, 99, 100.5, v=1000),
         bar(5, 100.5, 102, 100, 100.8, v=1000),
         bar(10, 100.8, 101.5, 98.5, 99.0, v=1000),
-        bar(15, 99.0, 103, 99.0, 102.5, v=1000),  # breaks out, but same volume as the average -- not 1.5x
+        bar(15, 99.0, 100.2, 99.5, 100.0, v=1000),  # post-range filler bar -- establishes the baseline
+        bar(20, 99.0, 103, 99.0, 102.5, v=1000),  # breaks out, but same volume as the filler -- not 1.5x
     ]
     blocked = generate_signal(
         bars, MARKET_OPEN, orb_minutes=15, use_vwap_filter=False, use_volume_filter=True,
@@ -113,7 +114,8 @@ def test_generate_signal_volume_filter_allows_high_volume_breakout():
         bar(0, 100, 101, 99, 100.5, v=1000),
         bar(5, 100.5, 102, 100, 100.8, v=1000),
         bar(10, 100.8, 101.5, 98.5, 99.0, v=1000),
-        bar(15, 99.0, 103, 99.0, 102.5, v=2000),  # 2x the average of the prior bars
+        bar(15, 99.0, 100.2, 99.5, 100.0, v=1000),  # post-range filler bar -- establishes the baseline
+        bar(20, 99.0, 103, 99.0, 102.5, v=2000),  # 2x the filler bar's volume
     ]
     signal = generate_signal(
         bars, MARKET_OPEN, orb_minutes=15, use_vwap_filter=False, use_volume_filter=True,
@@ -145,6 +147,30 @@ def test_generate_signal_volume_filter_uses_trailing_window_not_full_day_average
         bar(40, 100.0, 100.2, 99.8, 100.0, v=1000),
         bar(45, 100.0, 103, 100.0, 102.5, v=1600),  # breaks out; 1.6x *recent* volume,
     ]                                                # but only ~1.1x the full-day average
+    signal = generate_signal(
+        bars, MARKET_OPEN, orb_minutes=15, use_vwap_filter=False, use_volume_filter=True,
+        volume_multiplier=1.5, volume_lookback_bars=6, breakout_buffer_pct=0.0,
+    )
+    assert signal is not None
+    assert signal.option_type == OptionType.CALL
+
+
+def test_generate_signal_volume_filter_baseline_excludes_range_forming_bars():
+    # A second real bug found from the same live backtest comparison: the
+    # trailing window alone doesn't help the *earliest* breakouts each day,
+    # since when there's little or no post-range history yet, the window
+    # has no choice but to reach back into the opening-range bars -- which
+    # are themselves structurally the highest-volume bars of the day. Here
+    # the window (6) is wider than the single post-range bar available, so
+    # it would pull in the 3 elevated range bars too if they weren't
+    # explicitly excluded from the baseline pool.
+    bars = [
+        bar(0, 100, 101, 99, 100.5, v=5000),  # opening-range bars, all volume-heavy
+        bar(5, 100.5, 102, 100, 100.8, v=5000),
+        bar(10, 100.8, 101.5, 98.5, 99.0, v=5000),
+        bar(15, 99.0, 100.2, 99.5, 100.0, v=1000),  # the only post-range bar before the breakout
+        bar(20, 99.0, 103, 99.0, 102.5, v=1600),  # 1.6x the post-range bar, but well under
+    ]                                              # 1.5x an average that included the range bars
     signal = generate_signal(
         bars, MARKET_OPEN, orb_minutes=15, use_vwap_filter=False, use_volume_filter=True,
         volume_multiplier=1.5, volume_lookback_bars=6, breakout_buffer_pct=0.0,
