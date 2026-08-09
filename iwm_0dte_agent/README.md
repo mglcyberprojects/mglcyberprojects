@@ -56,34 +56,14 @@ sizing, confirmation gate, and hard-exit handling described below; only the
 
 ### Opening Range Breakout (`STRATEGY=orb`, default)
 
-With optional VWAP, volume, and breakout-buffer confirming filters:
+With an optional VWAP trend filter, plus two more optional confirming
+filters (off by default — see below):
 
 1. The first `ORB_MINUTES` (default 15) of the session establishes a
    high/low range.
-2. A close above the range high signals a **call**, below the range low
-   signals a **put** — subject to three independently-toggleable filters,
-   each trading signal frequency for signal quality:
-   - **VWAP** (`VWAP_FILTER`, default on): the close must be on the
-     correct side of session VWAP too.
-   - **Volume** (`VOLUME_FILTER`, default on): the breakout bar's volume
-     must beat `VOLUME_MULTIPLIER` (default 1.5) times the average volume
-     of the last `VOLUME_LOOKBACK_BARS` (default 6) bars, counting only
-     bars *after* the opening range closed — filters out breakouts on
-     unconvincing (thin) participation. Two deliberate choices here, both
-     found necessary from a real backtest comparison rather than assumed
-     upfront: a trailing window instead of a cumulative average of every
-     bar since open (the first 15-30 minutes of the session is naturally
-     the highest-volume part of the day, so a cumulative average stays
-     permanently skewed high right when it matters most), and excluding
-     the range-forming bars themselves from that window (they're
-     structurally the highest-volume bars of the day, so for the earliest
-     breakouts — where a trailing window has nowhere else to look back to
-     yet — they'd inflate the baseline exactly when the window alone
-     couldn't rescue it).
-   - **Breakout buffer** (`BREAKOUT_BUFFER_PCT`, default 0.001 = 0.1%):
-     the close must clear the level by this fraction, not just tick
-     through it by any amount — cuts down on breakouts that immediately
-     fail back into the range.
+2. A close above the range high — and above session VWAP, if
+   `VWAP_FILTER` (default on) is on — signals a **call**. A close below
+   the range low (and below VWAP) signals a **put**.
 3. Only one position is held at a time, capped at `MAX_TRADES_PER_DAY`
    entries per day.
 4. Every position carries a stop loss and profit target expressed as a
@@ -91,11 +71,25 @@ With optional VWAP, volume, and breakout-buffer confirming filters:
    regardless of P&L, to avoid holding 0DTE contracts into the final
    minutes before expiration.
 
-All three filters apply in both paper and `--live` mode, and are replayed
-identically in `backtest.py` since it reuses this exact function — so
-`python -m iwm_0dte_agent.backtest` is the way to compare signal frequency
-and win rate with a filter on vs. off before trusting a change with real
-money. Set any of them to `false`/`0` in `.env` to turn it off.
+**Two additional confirming filters exist, both off by default**
+(`VOLUME_FILTER=false`, `BREAKOUT_BUFFER_PCT=0`) — a real backtest
+comparison didn't show a clear benefit over the base ORB+VWAP strategy, so
+the agent behaves the same as it did before these existed unless you
+explicitly turn one on to experiment:
+- **Volume** (`VOLUME_FILTER`): the breakout bar's volume must beat
+  `VOLUME_MULTIPLIER` (default 1.5) times the average volume of the last
+  `VOLUME_LOOKBACK_BARS` (default 6) bars, counting only bars *after* the
+  opening range closed (not the range-forming bars themselves, which are
+  structurally the highest-volume bars of the day and would otherwise
+  inflate the baseline right when it matters most).
+- **Breakout buffer** (`BREAKOUT_BUFFER_PCT`, e.g. 0.001 = 0.1%): the
+  close must clear the level by this fraction, not just tick through it
+  by any amount.
+
+Both apply in paper, `--live`, and `backtest.py` identically since all
+three reuse this exact function — `python -m iwm_0dte_agent.backtest` is
+the way to compare signal frequency and win rate with a filter on vs. off
+before trusting a change with real money.
 
 See `iwm_0dte_agent/strategy.py` for the exact logic — it's pure functions
 with no I/O, so it's easy to read and to unit test.

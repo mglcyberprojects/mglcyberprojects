@@ -54,10 +54,13 @@ class Config:
 
     # Additional ORB confirming filters -- each cuts signal frequency for
     # (hopefully) higher quality; see strategy.generate_signal()'s docstring.
-    volume_filter: bool = field(default_factory=lambda: os.environ.get("VOLUME_FILTER", "true").lower() == "true")
+    # Default OFF: a real backtest comparison didn't show a clear benefit,
+    # so the agent behaves the same as it did before these existed unless
+    # you explicitly turn one on to experiment.
+    volume_filter: bool = field(default_factory=lambda: os.environ.get("VOLUME_FILTER", "false").lower() == "true")
     volume_multiplier: float = field(default_factory=lambda: _env_float("VOLUME_MULTIPLIER", 1.5))
     volume_lookback_bars: int = field(default_factory=lambda: _env_int("VOLUME_LOOKBACK_BARS", 6))
-    breakout_buffer_pct: float = field(default_factory=lambda: _env_float("BREAKOUT_BUFFER_PCT", 0.001))
+    breakout_buffer_pct: float = field(default_factory=lambda: _env_float("BREAKOUT_BUFFER_PCT", 0.0))
 
     # Small-account smoke-test mode: instead of strike_offset/risk-% sizing,
     # picks the cheapest strike at least otm_min_discount_pct below the ATM
