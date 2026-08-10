@@ -65,38 +65,38 @@ def _today_open(config: Config) -> dt.datetime:
     )
 
 
+def _alert_deduped(
+    key: str, message: str, notifier: Notifier, alerted_reasons: set[tuple[dt.date, str]],
+) -> None:
+    """Send `message` at most once per calendar day per `key`.
+
+    Without this, any persistent condition -- a blocked-entry reason, a
+    stuck loop error, a signal that keeps re-firing with no usable contract
+    or affordable quantity -- would re-alert on every poll cycle (every
+    `poll_seconds`, the default is once a minute) for the rest of the
+    session. `key` should describe the *category* of the condition, not
+    include values that change every cycle (like a live price) or every
+    alert in that category would look "new" and defeat the dedup.
+    """
+    full_key = (dt.date.today(), key)
+    if full_key in alerted_reasons:
+        return
+    alerted_reasons.add(full_key)
+    notifier.alert(message)
+
+
 def _maybe_alert_blocked_entry(
     why: str, notifier: Notifier, alerted_reasons: set[tuple[dt.date, str]],
 ) -> None:
-    """Alert the first time (per day) a given risk reason blocks a new entry.
-
-    Without this, a blocked reason would re-alert on every poll cycle
-    (every `poll_seconds`) for the rest of the session.
-    """
-    key = (dt.date.today(), why)
-    if key in alerted_reasons:
-        return
-    alerted_reasons.add(key)
-    notifier.alert(f"No new entries: {why}")
+    _alert_deduped(why, f"No new entries: {why}", notifier, alerted_reasons)
 
 
 def _maybe_alert_loop_error(
     exc: Exception, notifier: Notifier, alerted_reasons: set[tuple[dt.date, str]],
 ) -> None:
-    """Alert the first time (per day) a given loop error occurs.
-
-    Same problem _maybe_alert_blocked_entry solves above, applied to loop
-    errors: without this, a persistent error (e.g. a broker/MCP schema
-    mismatch) would re-alert on every poll cycle -- once a minute at the
-    default POLL_SECONDS -- for the rest of the session. Keyed with an
-    "error: " prefix so it can't collide with a blocked-entry reason that
-    happens to read the same as an exception's repr.
-    """
-    key = (dt.date.today(), f"error: {exc!r}")
-    if key in alerted_reasons:
-        return
-    alerted_reasons.add(key)
-    notifier.alert(f"Error in agent loop: {exc!r}")
+    # Keyed with an "error: " prefix so it can't collide with a
+    # blocked-entry reason that happens to read the same as an exception's repr.
+    _alert_deduped(f"error: {exc!r}", f"Error in agent loop: {exc!r}", notifier, alerted_reasons)
 
 
 def _generate_signal(
@@ -153,18 +153,22 @@ def _try_open_position(
         contract = select_strike(chain, signal.option_type, signal.underlying_price, config.strike_offset)
     if contract is None or contract.ask <= 0:
         logger.warning("No usable %s contract found near %.2f", signal.option_type.value, signal.underlying_price)
-        notifier.alert(
+        _alert_deduped(
+            f"no_usable_contract:{signal.option_type.value}",
             f"Signal fired ({signal.option_type.value.upper()}, {signal.reason}) but no "
-            f"usable contract was found -- skipped."
+            f"usable contract was found -- skipped.",
+            notifier, alerted_reasons,
         )
         return None
 
     choices = risk.quantity_choices(buying_power, contract.ask)
     if not choices:
         logger.info("No affordable contract quantity, skipping signal: %s", signal.reason)
-        notifier.alert(
+        _alert_deduped(
+            f"no_affordable_quantity:{signal.option_type.value}",
             f"Signal fired ({signal.option_type.value.upper()}, {signal.reason}) but no "
-            f"affordable quantity -- skipped."
+            f"affordable quantity -- skipped.",
+            notifier, alerted_reasons,
         )
         return None
 

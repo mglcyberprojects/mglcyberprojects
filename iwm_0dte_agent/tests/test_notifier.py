@@ -1,6 +1,6 @@
 import datetime as dt
 
-from iwm_0dte_agent.agent import _maybe_alert_blocked_entry, _maybe_alert_loop_error
+from iwm_0dte_agent.agent import _alert_deduped, _maybe_alert_blocked_entry, _maybe_alert_loop_error
 from iwm_0dte_agent.config import Config
 from iwm_0dte_agent.notifier import build_notifier
 from iwm_0dte_agent.terminal_notifier import TerminalNotifier
@@ -91,5 +91,41 @@ def test_loop_error_alert_refires_on_new_day():
     alerted.add((yesterday, "error: ValueError('boom')"))
 
     _maybe_alert_loop_error(ValueError("boom"), notifier, alerted)
+
+    assert len(notifier.alerts) == 1
+
+
+def test_alert_deduped_fires_once_per_key_even_with_changing_message_text():
+    # _alert_deduped underlies the "no usable contract" / "no affordable
+    # quantity" entry alerts, where the message text embeds a live close
+    # price that's different every poll cycle -- the key must stay stable
+    # (based on option_type, not the live price) for the dedup to work.
+    notifier = FakeNotifier()
+    alerted: set[tuple[dt.date, str]] = set()
+
+    _alert_deduped("no_usable_contract:put", "close 300.25 broke below ORB low 300.47", notifier, alerted)
+    _alert_deduped("no_usable_contract:put", "close 300.14 broke below ORB low 300.47", notifier, alerted)
+    _alert_deduped("no_usable_contract:put", "close 300.07 broke below ORB low 300.47", notifier, alerted)
+
+    assert len(notifier.alerts) == 1
+
+
+def test_alert_deduped_fires_again_for_a_different_key():
+    notifier = FakeNotifier()
+    alerted: set[tuple[dt.date, str]] = set()
+
+    _alert_deduped("no_usable_contract:put", "put message", notifier, alerted)
+    _alert_deduped("no_usable_contract:call", "call message", notifier, alerted)
+
+    assert len(notifier.alerts) == 2
+
+
+def test_alert_deduped_refires_on_new_day():
+    notifier = FakeNotifier()
+    alerted: set[tuple[dt.date, str]] = set()
+    yesterday = dt.date.today() - dt.timedelta(days=1)
+    alerted.add((yesterday, "no_usable_contract:put"))
+
+    _alert_deduped("no_usable_contract:put", "put message", notifier, alerted)
 
     assert len(notifier.alerts) == 1

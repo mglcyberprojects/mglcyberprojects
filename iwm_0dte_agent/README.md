@@ -306,10 +306,12 @@ alerts — the agent always has a working confirmation channel either way.
 
 What gets sent: agent start/stop, every proposed trade (entries with
 quantity-choice buttons, closes with Approve/Decline), fills, declines, order
-failures, risk limits blocking new entries (deduplicated to once per reason
-per day), hard-exit-forced closes, and unhandled errors in the agent loop
-(also deduplicated to once per distinct error per day, so a persistent
-problem doesn't re-alert every `POLL_SECONDS` for the rest of the session).
+failures, hard-exit-forced closes, and: risk limits blocking new entries, a
+signal that fires with no usable contract or no affordable quantity, and
+unhandled errors in the agent loop -- all deduplicated to once per distinct
+reason per day, so a persistent condition (a signal that keeps re-firing, a
+stuck error) doesn't re-alert every `POLL_SECONDS` (default 60s) for the
+rest of the session.
 
 Only replies from the configured `TELEGRAM_CHAT_ID` are ever accepted as an
 approval — button presses from any other chat are logged and ignored (same
