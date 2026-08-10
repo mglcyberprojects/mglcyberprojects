@@ -79,6 +79,47 @@ def _first_present(data: dict, *keys: str) -> Any | None:
     return None
 
 
+def _extract_first_equity_quote(data: Any) -> dict:
+    """get_equity_quotes actually nests each symbol's quote at
+    data.data.results[].quote (paired with a sibling `close` object for the
+    prior session's settled close) -- not the flatter `quotes: [...]` shape
+    once assumed here. Handle both, since that assumption was wrong once
+    already and Robinhood's MCP schemas have shifted before (see
+    get_buying_power's data.buying_power.buying_power nesting)."""
+    if isinstance(data, dict):
+        inner = data.get("data")
+        if isinstance(inner, dict):
+            results = inner.get("results")
+            if isinstance(results, list) and results and isinstance(results[0], dict):
+                quote = results[0].get("quote")
+                if isinstance(quote, dict):
+                    return quote
+        quotes = data.get("quotes")
+        if isinstance(quotes, list) and quotes and isinstance(quotes[0], dict):
+            return quotes[0]
+        return data
+    if isinstance(data, list):
+        return data[0] if data and isinstance(data[0], dict) else {}
+    return {}
+
+
+def _current_trade_price(quote: dict) -> Any | None:
+    """Prefer whichever of last_trade_price / last_non_reg_trade_price has
+    the more recent venue timestamp, per the MCP server's own guidance for
+    this endpoint -- both are ISO 8601 UTC timestamps in the same format, so
+    a plain string comparison orders them correctly. Falls back to older/
+    flatter field names in case a different MCP schema is ever seen."""
+    candidates = [
+        (quote.get("last_trade_price"), quote.get("venue_last_trade_time")),
+        (quote.get("last_non_reg_trade_price"), quote.get("venue_last_non_reg_trade_time")),
+    ]
+    candidates = [(price, ts) for price, ts in candidates if price not in (None, "") and ts]
+    if candidates:
+        candidates.sort(key=lambda pt: pt[1])
+        return candidates[-1][0]
+    return _first_present(quote, "last_trade_price", "lastTradePrice", "price", "mark_price")
+
+
 _SHUTDOWN = object()
 
 
@@ -386,11 +427,8 @@ class MCPBroker(Broker):
     def get_underlying_price(self, symbol: str) -> float:
         tool = self._pick_tool("get_equity_quotes")
         data = self._call_tool_sync(tool, {"symbols": [symbol]})
-        quotes = data.get("quotes") if isinstance(data, dict) else None
-        if quotes is None:
-            quotes = data if isinstance(data, list) else [data]
-        quote = quotes[0] if quotes else {}
-        price = _first_present(quote, "last_trade_price", "lastTradePrice", "price", "mark_price")
+        quote = _extract_first_equity_quote(data)
+        price = _current_trade_price(quote)
         if price is None:
             raise MCPError(f"Could not find a price for {symbol} in {tool} response: {data}")
         return float(price)

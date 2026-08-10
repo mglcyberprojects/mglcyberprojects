@@ -98,6 +98,52 @@ def test_get_underlying_price_raises_when_unparseable():
         broker.get_underlying_price("IWM")
 
 
+def test_get_underlying_price_parses_real_nested_results_schema():
+    # The MCP server actually nests each symbol's quote at
+    # data.results[].quote (paired with a sibling `close` object), not the
+    # flatter `quotes: [...]` shape assumed above -- this is the real shape
+    # seen live for get_equity_quotes.
+    broker = make_broker()
+    broker._mcp_session = FakeMCPSession({"get_equity_quotes"})
+    broker._call_tool_sync = lambda name, args: {
+        "data": {
+            "results": [{
+                "quote": {
+                    "symbol": "IWM",
+                    "last_trade_price": "301.530000",
+                    "venue_last_trade_time": "2026-08-07T19:59:59.999406061Z",
+                    "last_non_reg_trade_price": "301.093400",
+                    "venue_last_non_reg_trade_time": "2026-08-10T09:08:36.370723729Z",
+                    "adjusted_previous_close": "301.560000",
+                    "previous_close": "301.560000",
+                    "bid_price": "301.090000",
+                    "ask_price": "301.130000",
+                    "has_traded": True,
+                    "state": "active",
+                },
+                "close": {"symbol": "IWM", "price": "301.56"},
+            }],
+            "guide": "...",
+        }
+    }
+    # last_non_reg_trade_price has the more recent venue timestamp.
+    assert broker.get_underlying_price("IWM") == 301.0934
+
+
+def test_get_underlying_price_prefers_more_recent_of_regular_and_non_reg_trade():
+    broker = make_broker()
+    broker._mcp_session = FakeMCPSession({"get_equity_quotes"})
+    broker._call_tool_sync = lambda name, args: {
+        "data": {"results": [{"quote": {
+            "last_trade_price": "302.00",
+            "venue_last_trade_time": "2026-08-10T10:00:00Z",
+            "last_non_reg_trade_price": "301.00",
+            "venue_last_non_reg_trade_time": "2026-08-10T09:00:00Z",
+        }}]}
+    }
+    assert broker.get_underlying_price("IWM") == 302.00
+
+
 def test_get_intraday_bars_samples_quote_and_returns_accumulated_bars():
     # No MCP historical-bars tool exists, so this polls the live quote
     # (like get_underlying_price does) and accumulates its own bars rather
