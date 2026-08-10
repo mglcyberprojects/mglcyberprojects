@@ -307,7 +307,9 @@ alerts — the agent always has a working confirmation channel either way.
 What gets sent: agent start/stop, every proposed trade (entries with
 quantity-choice buttons, closes with Approve/Decline), fills, declines, order
 failures, risk limits blocking new entries (deduplicated to once per reason
-per day), hard-exit-forced closes, and unhandled errors in the agent loop.
+per day), hard-exit-forced closes, and unhandled errors in the agent loop
+(also deduplicated to once per distinct error per day, so a persistent
+problem doesn't re-alert every `POLL_SECONDS` for the rest of the session).
 
 Only replies from the configured `TELEGRAM_CHAT_ID` are ever accepted as an
 approval — button presses from any other chat are logged and ignored (same

@@ -1,6 +1,6 @@
 import datetime as dt
 
-from iwm_0dte_agent.agent import _maybe_alert_blocked_entry
+from iwm_0dte_agent.agent import _maybe_alert_blocked_entry, _maybe_alert_loop_error
 from iwm_0dte_agent.config import Config
 from iwm_0dte_agent.notifier import build_notifier
 from iwm_0dte_agent.terminal_notifier import TerminalNotifier
@@ -54,5 +54,42 @@ def test_blocked_entry_alert_refires_on_new_day():
     alerted.add((yesterday, "max trades/day reached (2)"))
 
     _maybe_alert_blocked_entry("max trades/day reached (2)", notifier, alerted)
+
+    assert len(notifier.alerts) == 1
+
+
+def test_loop_error_alert_fires_once_per_error_per_day():
+    # A persistent loop error (e.g. a broker/MCP schema mismatch) used to
+    # re-alert every poll cycle -- once a minute at the default
+    # POLL_SECONDS -- for the rest of the session. Same fix as
+    # _maybe_alert_blocked_entry, applied here.
+    notifier = FakeNotifier()
+    alerted: set[tuple[dt.date, str]] = set()
+
+    _maybe_alert_loop_error(ValueError("boom"), notifier, alerted)
+    _maybe_alert_loop_error(ValueError("boom"), notifier, alerted)
+    _maybe_alert_loop_error(ValueError("boom"), notifier, alerted)
+
+    assert len(notifier.alerts) == 1
+    assert "boom" in notifier.alerts[0]
+
+
+def test_loop_error_alert_fires_again_for_a_different_error():
+    notifier = FakeNotifier()
+    alerted: set[tuple[dt.date, str]] = set()
+
+    _maybe_alert_loop_error(ValueError("boom"), notifier, alerted)
+    _maybe_alert_loop_error(RuntimeError("different problem"), notifier, alerted)
+
+    assert len(notifier.alerts) == 2
+
+
+def test_loop_error_alert_refires_on_new_day():
+    notifier = FakeNotifier()
+    alerted: set[tuple[dt.date, str]] = set()
+    yesterday = dt.date.today() - dt.timedelta(days=1)
+    alerted.add((yesterday, "error: ValueError('boom')"))
+
+    _maybe_alert_loop_error(ValueError("boom"), notifier, alerted)
 
     assert len(notifier.alerts) == 1

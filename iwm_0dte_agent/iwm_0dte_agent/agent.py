@@ -80,6 +80,25 @@ def _maybe_alert_blocked_entry(
     notifier.alert(f"No new entries: {why}")
 
 
+def _maybe_alert_loop_error(
+    exc: Exception, notifier: Notifier, alerted_reasons: set[tuple[dt.date, str]],
+) -> None:
+    """Alert the first time (per day) a given loop error occurs.
+
+    Same problem _maybe_alert_blocked_entry solves above, applied to loop
+    errors: without this, a persistent error (e.g. a broker/MCP schema
+    mismatch) would re-alert on every poll cycle -- once a minute at the
+    default POLL_SECONDS -- for the rest of the session. Keyed with an
+    "error: " prefix so it can't collide with a blocked-entry reason that
+    happens to read the same as an exception's repr.
+    """
+    key = (dt.date.today(), f"error: {exc!r}")
+    if key in alerted_reasons:
+        return
+    alerted_reasons.add(key)
+    notifier.alert(f"Error in agent loop: {exc!r}")
+
+
 def _generate_signal(
     config: Config, bars: list[Bar], gameplan_state: GameplanState | None, gameplan_zones: GameplanZones | None,
     notifier: Notifier,
@@ -356,7 +375,7 @@ def run(live: bool, once: bool, config: Config = CONFIG) -> None:
             _handle_status_requests(notifier, broker, risk, position, config)
         except Exception as exc:
             logger.exception("Error in agent loop iteration")
-            notifier.alert(f"Error in agent loop: {exc!r}")
+            _maybe_alert_loop_error(exc, notifier, alerted_reasons)
 
         if once:
             break
