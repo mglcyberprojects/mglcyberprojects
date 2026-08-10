@@ -62,6 +62,11 @@ class ProposedOrder:
     # was originally opened at), so a confirm() UI can show % gain/loss.
     # None for entry proposals, where there's nothing yet to compare against.
     entry_price: float | None = None
+    # Set only on entry proposals: the affordable quantities (e.g. 1/3/5
+    # contracts) a confirm() UI should let the human pick between, instead
+    # of a single fixed `quantity`. None for close proposals, which always
+    # close the existing position's full size -- there's nothing to choose.
+    quantity_choices: list[int] | None = None
 
     @property
     def pnl_pct(self) -> float | None:

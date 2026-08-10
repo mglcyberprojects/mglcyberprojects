@@ -140,21 +140,19 @@ def _try_open_position(
         )
         return None
 
-    if config.cheap_otm_mode:
-        quantity = risk.cheap_otm_position_size(buying_power, contract.ask)
-    else:
-        quantity = risk.position_size(buying_power, contract.ask)
-    if quantity <= 0:
-        logger.info("Position size computed to 0 contracts, skipping signal: %s", signal.reason)
+    choices = risk.quantity_choices(buying_power, contract.ask)
+    if not choices:
+        logger.info("No affordable contract quantity, skipping signal: %s", signal.reason)
         notifier.alert(
-            f"Signal fired ({signal.option_type.value.upper()}, {signal.reason}) but position "
-            f"size came out to 0 contracts -- skipped."
+            f"Signal fired ({signal.option_type.value.upper()}, {signal.reason}) but no "
+            f"affordable quantity -- skipped."
         )
         return None
 
     proposed = ProposedOrder(
         contract=contract,
-        quantity=quantity,
+        quantity=choices[0],
+        quantity_choices=choices,
         limit_price=contract.ask,
         stop_loss_price=round(contract.ask * (1 - config.stop_loss_pct), 2),
         profit_target_price=round(contract.ask * (1 + config.profit_target_pct), 2),
@@ -162,14 +160,15 @@ def _try_open_position(
     )
     trade_log.write(
         "proposed_open", symbol=contract.symbol, option_type=contract.option_type.value,
-        strike=contract.strike, expiration=contract.expiration, quantity=quantity,
-        price=contract.ask, reason=signal.reason,
+        strike=contract.strike, expiration=contract.expiration, quantity=0,
+        price=contract.ask, reason=f"{signal.reason} (choices: {choices})",
     )
 
-    if not notifier.confirm(proposed, live):
+    quantity = notifier.confirm(proposed, live)
+    if quantity <= 0:
         trade_log.write(
             "declined_open", symbol=contract.symbol, option_type=contract.option_type.value,
-            strike=contract.strike, expiration=contract.expiration, quantity=quantity,
+            strike=contract.strike, expiration=contract.expiration, quantity=0,
             price=contract.ask, reason=signal.reason,
         )
         notifier.alert(f"Declined: {contract.option_type.value.upper()} ${contract.strike:g} entry")

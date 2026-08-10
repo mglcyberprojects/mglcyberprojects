@@ -72,14 +72,19 @@ Tap the persistent "Positions" button   Same reply as /status -- always
                                          sent once automatically at startup.
 Tap "Refresh" on a status card          Re-fetches and edits that same
                                          message in place with fresh numbers.
-Approve / Decline buttons               On every proposed trade (entry or
-                                         exit) -- nothing is ever submitted
-                                         without one of these.
+Quantity buttons (1x / 3x / 5x) + Decline   On every proposed entry -- picks
+                                             how many contracts, whichever
+                                             you can afford. Nothing is ever
+                                             submitted without a tap.
+Approve / Decline buttons               On every proposed exit -- exits
+                                         always close the full existing
+                                         position, so there's no quantity
+                                         to pick.
 
 Note: /status, Positions, and Refresh are checked once per agent loop
-cycle (POLL_SECONDS, default 60s) -- not instant. Approve/Decline on a
-specific proposed trade responds immediately (that's a dedicated wait, not
-the shared poll).
+cycle (POLL_SECONDS, default 60s) -- not instant. Responding to a specific
+proposed trade responds immediately (that's a dedicated wait, not the
+shared poll).
 
 
 TESTS
@@ -122,11 +127,16 @@ Strategy & signal quality:
   STRIKE_OFFSET=0                   0 = ATM, N = N strikes further OTM
 
 Small-account smoke test:
-  CHEAP_OTM_MODE=false              true = pick cheapest strike + buy 1 contract if affordable
+  CHEAP_OTM_MODE=false              true = pick cheapest strike. Also buys 1 contract if affordable,
+                                     but only in backtest.py -- live/paper always offers the 1/3/5
+                                     quantity choice below regardless of this flag.
   OTM_MIN_DISCOUNT_PCT=0.70         How much cheaper than ATM the picked strike must be
 
 Risk management:
-  RISK_PCT_PER_TRADE=0.01           Ignored when CHEAP_OTM_MODE=true
+  RISK_PCT_PER_TRADE=0.01           backtest.py sizing only (ignored there when CHEAP_OTM_MODE=true).
+                                     Live/paper entries never use this -- they offer a choice of
+                                     1/3/5 contracts instead, capped by MAX_CONTRACTS_PER_TRADE and
+                                     whichever of those you can actually afford.
   STOP_LOSS_PCT=0.50
   PROFIT_TARGET_PCT=1.00
   MAX_TRADES_PER_DAY=2

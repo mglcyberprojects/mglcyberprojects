@@ -67,22 +67,39 @@ class TerminalNotifier:
             print("Could not parse that -- expected exactly 4 numbers. Skipping trading today.")
         return zones
 
-    def confirm(self, order: ProposedOrder, live: bool) -> bool:
+    def confirm(self, order: ProposedOrder, live: bool) -> int:
         mode = "LIVE (real money)" if live else "PAPER (simulated)"
         print("\n" + "=" * 60)
         print(f"PROPOSED TRADE -- {mode}")
         print("=" * 60)
         print(f"  {order.contract.option_type.value.upper()} {order.contract.symbol} "
               f"${order.contract.strike:g} exp {order.contract.expiration}")
-        print(f"  Quantity:        {order.quantity} contract(s)")
         print(f"  Limit price:     ${order.limit_price:.2f}  "
               f"(bid ${order.contract.bid:.2f} / ask ${order.contract.ask:.2f})")
-        print(f"  Est. cost:       ${order.limit_price * order.quantity * 100:.2f}")
+        if order.quantity_choices:
+            print("  Quantity options:")
+            for q in order.quantity_choices:
+                print(f"    {q}  ->  est. cost ${order.limit_price * q * 100:.2f}")
+        else:
+            print(f"  Quantity:        {order.quantity} contract(s)")
+            print(f"  Est. cost:       ${order.limit_price * order.quantity * 100:.2f}")
         print(f"  Stop loss:       ${order.stop_loss_price:.2f}")
         print(f"  Profit target:   ${order.profit_target_price:.2f}")
         if order.entry_price is not None:
             print(f"  P&L:             {order.pnl_pct:+.1f}% (${order.pnl_dollars:+.2f})")
         print(f"  Reason:          {order.reason}")
         print("=" * 60)
+
+        if order.quantity_choices:
+            choices_str = "/".join(str(q) for q in order.quantity_choices)
+            answer = input(f"Submit this order? Enter quantity [{choices_str}] or blank to decline: ").strip()
+            if not answer:
+                return 0
+            try:
+                chosen = int(answer)
+            except ValueError:
+                return 0
+            return chosen if chosen in order.quantity_choices else 0
+
         answer = input("Submit this order? [y/N]: ").strip().lower()
-        return answer in ("y", "yes")
+        return order.quantity if answer in ("y", "yes") else 0

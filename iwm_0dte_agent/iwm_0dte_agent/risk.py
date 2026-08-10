@@ -73,3 +73,20 @@ class RiskManager:
         if premium_per_contract <= 0:
             return 0
         return 1 if premium_per_contract * 100 <= buying_power else 0
+
+    _QUANTITY_CHOICES = (1, 3, 5)
+
+    def quantity_choices(self, buying_power: float, premium_per_contract: float) -> list[int]:
+        """Affordable candidates from (1, 3, 5) contracts, capped at
+        max_contracts_per_trade -- used for the live/paper entry flow,
+        where the human picks a quantity directly at approval time instead
+        of the agent computing a single one via position_size()/
+        cheap_otm_position_size(). Those two are unaffected and still drive
+        backtest.py's unattended sizing."""
+        if premium_per_contract <= 0:
+            return []
+        cost_per_contract = premium_per_contract * 100
+        return [
+            q for q in self._QUANTITY_CHOICES
+            if q <= self.config.max_contracts_per_trade and q * cost_per_contract <= buying_power
+        ]

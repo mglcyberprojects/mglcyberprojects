@@ -33,12 +33,15 @@ first `--live` session, and what to expect during one.
   touches Robinhood or real money — it simulates fills against real IWM
   price data pulled via `yfinance`, with a synthetic (Black-Scholes) option
   chain. Use this to evaluate the strategy before ever considering `--live`.
-- Every proposed trade — entry or exit — shows its contract, size, cost,
-  stop loss, and profit target, and requires an explicit approval before
-  `broker.submit_order` is ever called. With Telegram configured, that
-  approval is an inline button reply from your authorized chat; otherwise
-  it's a typed `y` at the terminal. `--live` mode additionally requires
-  typing `LIVE` at startup before the session begins.
+- Every proposed trade — entry or exit — shows its contract, cost, stop
+  loss, and profit target, and requires an explicit approval before
+  `broker.submit_order` is ever called. Entries let you pick the quantity
+  yourself (1/3/5 contracts, whichever you can afford); exits always close
+  the full existing position, so there's nothing to pick. With Telegram
+  configured, that approval is inline buttons in your authorized chat;
+  otherwise it's typed at the terminal (a quantity for entries, `y`/`N` for
+  exits). `--live` mode additionally requires typing `LIVE` at startup
+  before the session begins.
 - **Telegram approval means whoever controls that Telegram account can
   place real orders in --live mode.** Treat the bot token and your chat id
   as credentials: keep `.env` out of git (already covered by `.gitignore`),
@@ -137,24 +140,39 @@ Configured in `.env` (see `.env.example`):
 
 | Setting | Meaning |
 |---|---|
-| `RISK_PCT_PER_TRADE` | Fraction of buying power risked per trade, sized against the stop loss |
+| `RISK_PCT_PER_TRADE` | Fraction of buying power risked per trade, sized against the stop loss — drives `backtest.py`'s unattended sizing only, see below |
 | `STOP_LOSS_PCT` / `PROFIT_TARGET_PCT` | Exit thresholds as % of entry premium |
 | `MAX_TRADES_PER_DAY` | Hard cap on new entries per session |
 | `MAX_DAILY_LOSS_PCT` | Stops new entries once realized losses for the day hit this % of buying power |
 | `MAX_CONTRACTS_PER_TRADE` | Absolute ceiling on position size regardless of sizing math |
 | `ENTRY_CUTOFF` / `HARD_EXIT` | No new entries after cutoff; all positions force-closed at hard exit |
 
-### Small-account smoke testing (e.g. $50)
+### Picking a quantity live/paper vs. in a backtest
+
+Live and paper sessions don't size positions automatically — when a signal
+fires, the agent computes which of **1, 3, or 5 contracts** you can actually
+afford (`quantity * ask * 100 <= buying power`, also capped at
+`MAX_CONTRACTS_PER_TRADE`) and offers you those as a choice at approval time:
+buttons in Telegram, or a typed number at the terminal. If none of 1/3/5 fit
+your buying power, the signal is skipped with an alert instead of prompting.
+`RISK_PCT_PER_TRADE` plays no part in this — it's not a live/paper knob.
+
+`backtest.py`, which has no human in the loop, still needs a fully automated
+sizing formula — that's what `RISK_PCT_PER_TRADE` (and `CHEAP_OTM_MODE`
+below) drive: they pick a single quantity per simulated trade so a multi-day
+backtest can run unattended.
+
+### Small-account smoke testing (e.g. $50) — backtest only
 
 A single ATM 0DTE IWM contract can easily cost more than a small test
 account's entire buying power, and the `RISK_PCT_PER_TRADE` sizing formula
 above will just size every trade down to 0 contracts once buying power gets
 that small. `CHEAP_OTM_MODE=true` swaps both of those out for account sizes
-where there's no meaningful "risk %" to size against:
+where there's no meaningful "risk %" to size against, in `backtest.py`:
 
 | Setting | Meaning |
 |---|---|
-| `CHEAP_OTM_MODE` | When true, replaces normal strike/sizing logic below |
+| `CHEAP_OTM_MODE` | When true, replaces normal strike/sizing logic below, in `backtest.py` |
 | `OTM_MIN_DISCOUNT_PCT` | Walks strikes out-of-the-money until premium is at least this much cheaper than the ATM contract's ask (default `0.70` = 70% cheaper) |
 
 With it on: the agent picks the first strike, walking away from ATM, whose
@@ -165,9 +183,12 @@ buying power, otherwise skips the signal. Stop loss / profit target %,
 approval-gating, and everything else about the agent is unchanged; this
 only changes *which* strike gets picked and *how many* contracts.
 
-Turn it off (`CHEAP_OTM_MODE=false`, the default) once you're sizing
-against a real account and want `RISK_PCT_PER_TRADE`-based position sizing
-back.
+`CHEAP_OTM_MODE` still affects strike selection in live/paper mode too — it's
+only the sizing half (1 contract only) that's backtest-only, since live/paper
+always offers the 1/3/5 choice described above regardless of this flag. Turn
+it off (`CHEAP_OTM_MODE=false`, the default) once you're backtesting against
+a real account and want `RISK_PCT_PER_TRADE`-based position sizing back for
+those simulated runs.
 
 ## Setup
 
@@ -277,13 +298,16 @@ alerts — the agent always has a working confirmation channel either way.
    `https://api.telegram.org/bot<YOUR_TOKEN>/getUpdates` in a browser right
    after step 2 and look for `"chat":{"id":...}` in the response. Put that
    number in `TELEGRAM_CHAT_ID`.
-4. Run the agent. You should get an "Agent started" message. Proposed trades
-   arrive with **Approve** / **Decline** buttons.
+4. Run the agent. You should get an "Agent started" message. Proposed entries
+   arrive with buttons for each affordable quantity (**1x / 3x / 5x contracts**,
+   whichever fit your buying power) plus **Decline**; proposed closes arrive
+   with **Approve** / **Decline** since a close always closes the full
+   existing position — there's nothing to choose there.
 
-What gets sent: agent start/stop, every proposed trade (with Approve/Decline
-buttons), fills, declines, order failures, risk limits blocking new entries
-(deduplicated to once per reason per day), hard-exit-forced closes, and
-unhandled errors in the agent loop.
+What gets sent: agent start/stop, every proposed trade (entries with
+quantity-choice buttons, closes with Approve/Decline), fills, declines, order
+failures, risk limits blocking new entries (deduplicated to once per reason
+per day), hard-exit-forced closes, and unhandled errors in the agent loop.
 
 Only replies from the configured `TELEGRAM_CHAT_ID` are ever accepted as an
 approval — button presses from any other chat are logged and ignored (same

@@ -14,7 +14,7 @@ class FakeNotifier:
     def alert(self, text: str) -> None:
         self.alerts.append(text)
 
-    def confirm(self, order, live: bool) -> bool:
+    def confirm(self, order, live: bool) -> int:
         raise NotImplementedError
 
 

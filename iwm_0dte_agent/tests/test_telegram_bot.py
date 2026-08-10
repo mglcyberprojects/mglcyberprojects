@@ -44,13 +44,13 @@ def test_alert_prefixes_icon_and_sends_plain_text_no_parse_mode():
 
 def _make_order(
     option_type=OptionType.CALL, reason="close 228.45 broke above ORB high 228.10",
-    entry_price=None, limit_price=2.10, quantity=3,
+    entry_price=None, limit_price=2.10, quantity=3, quantity_choices=None,
 ):
     contract = OptionContract("IWM", 228.0, option_type, "2026-08-10", 2.00, limit_price, 2.05, "instr-1")
     return ProposedOrder(
         contract=contract, quantity=quantity, limit_price=limit_price,
         stop_loss_price=1.05, profit_target_price=4.20, reason=reason,
-        entry_price=entry_price,
+        entry_price=entry_price, quantity_choices=quantity_choices,
     )
 
 
@@ -58,7 +58,7 @@ def test_confirm_sends_html_with_bold_and_direction_icon():
     notifier = make_notifier()
     fake_call = FakeCall()
     notifier._call = fake_call
-    notifier._await_response = lambda nonce, message_id: True
+    notifier._await_response = lambda nonce, message_id, fallback_quantity: fallback_quantity
 
     notifier.confirm(_make_order(option_type=OptionType.CALL), live=True)
 
@@ -75,7 +75,7 @@ def test_confirm_uses_put_icon_and_paper_icon():
     notifier = make_notifier()
     fake_call = FakeCall()
     notifier._call = fake_call
-    notifier._await_response = lambda nonce, message_id: True
+    notifier._await_response = lambda nonce, message_id, fallback_quantity: fallback_quantity
 
     notifier.confirm(_make_order(option_type=OptionType.PUT), live=False)
 
@@ -92,7 +92,7 @@ def test_confirm_escapes_html_sensitive_reason_text():
     notifier = make_notifier()
     fake_call = FakeCall()
     notifier._call = fake_call
-    notifier._await_response = lambda nonce, message_id: True
+    notifier._await_response = lambda nonce, message_id, fallback_quantity: fallback_quantity
 
     order = _make_order(reason="stop loss hit (bid 1.05 <= 1.05)")
     notifier.confirm(order, live=True)
@@ -108,7 +108,7 @@ def test_confirm_entry_proposal_shows_no_pnl_line():
     notifier = make_notifier()
     fake_call = FakeCall()
     notifier._call = fake_call
-    notifier._await_response = lambda nonce, message_id: True
+    notifier._await_response = lambda nonce, message_id, fallback_quantity: fallback_quantity
 
     notifier.confirm(_make_order(entry_price=None), live=True)
 
@@ -120,7 +120,7 @@ def test_confirm_close_proposal_shows_gain_with_green_icon():
     notifier = make_notifier()
     fake_call = FakeCall()
     notifier._call = fake_call
-    notifier._await_response = lambda nonce, message_id: True
+    notifier._await_response = lambda nonce, message_id, fallback_quantity: fallback_quantity
 
     # Entered at $2.10, closing at $4.25 -> +102.4%, +$645.00 on 3 contracts.
     order = _make_order(entry_price=2.10, limit_price=4.25, reason="profit target hit (bid 4.25 >= 4.20)")
@@ -134,7 +134,7 @@ def test_confirm_close_proposal_shows_loss_with_red_icon():
     notifier = make_notifier()
     fake_call = FakeCall()
     notifier._call = fake_call
-    notifier._await_response = lambda nonce, message_id: True
+    notifier._await_response = lambda nonce, message_id, fallback_quantity: fallback_quantity
 
     # Entered at $1.35, closing at $0.65 -> -51.9%, -$280.00 on 4 contracts.
     order = _make_order(entry_price=1.35, limit_price=0.65, quantity=4, reason="stop loss hit (bid 0.65 <= 0.68)")
@@ -142,6 +142,108 @@ def test_confirm_close_proposal_shows_loss_with_red_icon():
 
     _, params = fake_call.calls[0]
     assert "🔴 P&L: <b>-51.9%</b> ($-280.00)" in params["text"]
+
+
+def test_confirm_with_quantity_choices_renders_choice_buttons_and_costs():
+    notifier = make_notifier()
+    fake_call = FakeCall()
+    notifier._call = fake_call
+    notifier._await_response = lambda nonce, message_id, fallback_quantity: fallback_quantity
+
+    order = _make_order(quantity_choices=[1, 3, 5], limit_price=2.10)
+    notifier.confirm(order, live=True)
+
+    _, params = fake_call.calls[0]
+    assert "Choose a quantity below:" in params["text"]
+    assert "Quantity:" not in params["text"].replace("Choose a quantity below:", "")
+    assert "Est. cost:" not in params["text"]
+    buttons = params["reply_markup"]["inline_keyboard"][0]
+    assert [b["text"] for b in buttons] == ["✅ 1x · $210", "✅ 3x · $630", "✅ 5x · $1050"]
+    decline_row = params["reply_markup"]["inline_keyboard"][1]
+    assert decline_row[0]["text"] == "❌ Decline"
+
+
+def test_confirm_without_choices_renders_fixed_quantity_and_approve_button():
+    notifier = make_notifier()
+    fake_call = FakeCall()
+    notifier._call = fake_call
+    notifier._await_response = lambda nonce, message_id, fallback_quantity: fallback_quantity
+
+    notifier.confirm(_make_order(quantity_choices=None, quantity=3), live=True)
+
+    _, params = fake_call.calls[0]
+    assert "Quantity: <b>3</b>" in params["text"]
+    assert "Choose a quantity below" not in params["text"]
+    buttons = params["reply_markup"]["inline_keyboard"][0]
+    assert [b["callback_data"].split(":")[0] for b in buttons] == ["approve", "decline"]
+
+
+def test_confirm_with_choices_picks_quantity_via_qty_callback():
+    notifier = make_notifier()
+    call_log = []
+    nonce_holder = {}
+
+    def fake_call(method, **params):
+        call_log.append((method, params))
+        if method == "sendMessage":
+            first_button = params["reply_markup"]["inline_keyboard"][0][0]
+            nonce_holder["nonce"] = first_button["callback_data"].split(":")[2]
+            return {"message_id": 1}
+        if method == "getUpdates":
+            nonce = nonce_holder["nonce"]
+            return [{
+                "update_id": 1,
+                "callback_query": {
+                    "id": "cbq-1",
+                    "message": {"chat": {"id": "42"}, "message_id": 1},
+                    "data": f"qty:3:{nonce}",
+                },
+            }]
+        return {}
+
+    notifier._call = fake_call
+
+    result = notifier.confirm(_make_order(quantity_choices=[1, 3, 5]), live=True)
+
+    assert result == 3
+
+
+def test_confirm_with_choices_decline_callback_returns_zero():
+    notifier = make_notifier()
+    nonce_holder = {}
+
+    def fake_call(method, **params):
+        if method == "sendMessage":
+            decline_button = params["reply_markup"]["inline_keyboard"][1][0]
+            nonce_holder["nonce"] = decline_button["callback_data"].split(":")[1]
+            return {"message_id": 1}
+        if method == "getUpdates":
+            nonce = nonce_holder["nonce"]
+            return [{
+                "update_id": 1,
+                "callback_query": {
+                    "id": "cbq-1",
+                    "message": {"chat": {"id": "42"}, "message_id": 1},
+                    "data": f"decline:{nonce}",
+                },
+            }]
+        return {}
+
+    notifier._call = fake_call
+
+    result = notifier.confirm(_make_order(quantity_choices=[1, 3, 5]), live=True)
+
+    assert result == 0
+
+
+def test_confirm_with_choices_times_out_and_returns_zero():
+    notifier = make_notifier()
+    notifier._timeout_seconds = 0
+    notifier._call = lambda method, **params: {"message_id": 1} if method == "sendMessage" else []
+
+    result = notifier.confirm(_make_order(quantity_choices=[1, 3, 5]), live=True)
+
+    assert result == 0
 
 
 def test_request_zones_sends_html_prompt_then_waits():

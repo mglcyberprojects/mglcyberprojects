@@ -58,6 +58,40 @@ def test_cheap_otm_position_size_zero_premium():
     assert risk.cheap_otm_position_size(buying_power=50, premium_per_contract=0.0) == 0
 
 
+def test_quantity_choices_returns_all_affordable_candidates():
+    risk = RiskManager(config=make_config())
+    # $25,000 buying power, $2.00 premium -> $200/contract. 1/3/5 all fit.
+    assert risk.quantity_choices(buying_power=25_000, premium_per_contract=2.00) == [1, 3, 5]
+
+
+def test_quantity_choices_filters_by_affordability():
+    risk = RiskManager(config=make_config())
+    # $500 buying power, $2.00 premium -> $200/contract. Only 1 fits (3x = $600).
+    assert risk.quantity_choices(buying_power=500, premium_per_contract=2.00) == [1]
+
+
+def test_quantity_choices_boundary_exactly_affordable():
+    risk = RiskManager(config=make_config())
+    # $600 buying power, $2.00 premium -> $200/contract. 3x = $600 exactly fits, 5x = $1000 doesn't.
+    assert risk.quantity_choices(buying_power=600, premium_per_contract=2.00) == [1, 3]
+
+
+def test_quantity_choices_capped_by_max_contracts_per_trade():
+    risk = RiskManager(config=make_config(max_contracts_per_trade=3))
+    # Affordable up to 5, but capped at max_contracts_per_trade=3.
+    assert risk.quantity_choices(buying_power=25_000, premium_per_contract=2.00) == [1, 3]
+
+
+def test_quantity_choices_empty_when_nothing_affordable():
+    risk = RiskManager(config=make_config())
+    assert risk.quantity_choices(buying_power=50, premium_per_contract=2.00) == []
+
+
+def test_quantity_choices_zero_premium():
+    risk = RiskManager(config=make_config())
+    assert risk.quantity_choices(buying_power=25_000, premium_per_contract=0.0) == []
+
+
 def test_max_trades_per_day_blocks_further_entries():
     risk = RiskManager(config=make_config(max_trades_per_day=1))
     can_open, _ = risk.can_open_new_trade(buying_power=25_000, now=dt.time(10, 0))
