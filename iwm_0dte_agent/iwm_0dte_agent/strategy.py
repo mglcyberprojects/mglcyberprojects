@@ -151,6 +151,24 @@ def generate_signal(
     return None
 
 
+def atm_contract(chain, option_type: OptionType, underlying_price: float):
+    """The contract of the given type whose strike is nearest underlying_price.
+
+    Exposed separately (not just inlined in select_strike/
+    select_cheap_otm_strike below, which both need it) so callers like
+    agent.py can look up "what would ATM even cost" for diagnostics when a
+    signal gets skipped -- e.g. to log why CHEAP_OTM_MODE's discount target
+    wasn't met, without duplicating this lookup.
+    """
+    same_type = sorted(
+        (c for c in chain if c.option_type == option_type), key=lambda c: c.strike
+    )
+    if not same_type:
+        return None
+    atm_index = min(range(len(same_type)), key=lambda i: abs(same_type[i].strike - underlying_price))
+    return same_type[atm_index]
+
+
 def select_strike(chain, option_type: OptionType, underlying_price: float, strike_offset: int):
     """Pick the contract nearest ATM, shifted `strike_offset` strikes OTM."""
     same_type = sorted(

@@ -2,6 +2,7 @@ import datetime as dt
 
 from iwm_0dte_agent.models import Bar, OptionContract, OptionType
 from iwm_0dte_agent.strategy import (
+    atm_contract,
     generate_signal,
     opening_range,
     select_cheap_otm_strike,
@@ -282,3 +283,14 @@ def test_select_cheap_otm_strike_returns_none_when_chain_too_shallow():
 
 def test_select_cheap_otm_strike_empty_chain_returns_none():
     assert select_cheap_otm_strike([], OptionType.CALL, 200.0, 0.70) is None
+
+
+def test_atm_contract_returns_nearest_strike():
+    chain = _otm_call_chain()
+    contract = atm_contract(chain, OptionType.CALL, underlying_price=200.2)
+    assert contract.strike == 200
+    assert contract.ask == 3.0
+
+
+def test_atm_contract_empty_chain_returns_none():
+    assert atm_contract([], OptionType.CALL, 200.0) is None

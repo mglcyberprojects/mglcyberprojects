@@ -1,8 +1,8 @@
 import datetime as dt
 
-from iwm_0dte_agent.agent import _build_agent_status, _handle_status_requests
+from iwm_0dte_agent.agent import _build_agent_status, _handle_status_requests, _try_open_position
 from iwm_0dte_agent.config import Config
-from iwm_0dte_agent.models import OpenPosition, OptionContract, OptionType
+from iwm_0dte_agent.models import Bar, OpenPosition, OptionContract, OptionType
 from iwm_0dte_agent.notifier import StatusRequest
 from iwm_0dte_agent.risk import RiskManager
 
@@ -121,3 +121,125 @@ def test_handle_status_requests_reuses_one_snapshot_for_multiple_pending():
     assert broker.get_buying_power_calls == 1  # one snapshot built, reused for both requests
     assert len(notifier.posted) == 1
     assert len(notifier.updated) == 1
+
+
+# --- _try_open_position: skip-branch diagnostic logging ---
+#
+# These exercise the two "signal fired but nothing tradeable" branches that
+# were previously silent in trade_log.csv (no record of *why* a repeated
+# signal never became a trade) -- added after a real session showed the
+# same PUT signal re-firing every poll cycle with "no usable contract" and
+# there was nothing in the log to explain what threshold it was missing by.
+
+BASE_DAY = dt.datetime(2024, 1, 2)
+
+
+def _entry_bar(minute_offset: int, o: float, h: float, l: float, c: float) -> Bar:
+    ts = BASE_DAY.replace(hour=9, minute=30) + dt.timedelta(minutes=minute_offset)
+    return Bar(timestamp=ts, open=o, high=h, low=l, close=c, volume=1000.0)
+
+
+def _put_breakdown_bars() -> list[Bar]:
+    # ORB low ends up at 200.2; the last bar closes at 199.8, breaking
+    # below it -- and 199.8 is unambiguously closer to strike 200 than 199
+    # in _otm_put_chain() below, so atm_contract() picks 200 deterministically.
+    return [
+        _entry_bar(0, 205, 206, 204, 205.5),
+        _entry_bar(5, 205.5, 207, 205, 205.8),
+        _entry_bar(10, 205.8, 206.5, 200.2, 202.0),
+        _entry_bar(15, 202.0, 202.0, 199.0, 199.8),
+    ]
+
+
+def _otm_put_chain() -> list[OptionContract]:
+    # ATM (200) ask=3.00, decaying as strikes move further OTM (downward,
+    # away from spot) -- same shape as test_strategy.py's fixture.
+    asks = {202: 3.6, 201: 3.3, 200: 3.0, 199: 2.0, 198: 1.3, 197: 0.85, 196: 0.5, 195: 0.3, 194: 0.2}
+    return [
+        OptionContract("IWM", strike, OptionType.PUT, "2024-01-02", ask - 0.05, ask, ask - 0.02, f"p{strike}")
+        for strike, ask in asks.items()
+    ]
+
+
+class FakeEntryBroker:
+    def __init__(self, buying_power: float, chain: list[OptionContract]):
+        self.buying_power = buying_power
+        self.chain = chain
+
+    def get_buying_power(self):
+        return self.buying_power
+
+    def get_intraday_bars(self, symbol, since):
+        return _put_breakdown_bars()
+
+    def get_0dte_chain(self, symbol):
+        return self.chain
+
+
+class FakeTradeLog:
+    def __init__(self):
+        self.entries: list[dict] = []
+
+    def write(self, event: str, **fields) -> None:
+        self.entries.append({"event": event, **fields})
+
+
+class FakeAlertNotifier:
+    def __init__(self):
+        self.alerts: list[str] = []
+
+    def alert(self, text: str) -> None:
+        self.alerts.append(text)
+
+    def confirm(self, order, live: bool) -> int:
+        raise AssertionError("confirm() should not be reached when the signal is skipped")
+
+
+def _entry_config(**overrides) -> Config:
+    defaults = dict(
+        vwap_filter=False, cheap_otm_mode=True, entry_cutoff=dt.time(23, 59),
+        hard_exit=dt.time(23, 59), max_trades_per_day=2, max_daily_loss_pct=0.5,
+    )
+    defaults.update(overrides)
+    return Config(**defaults)
+
+
+def test_try_open_position_logs_diagnostics_when_no_usable_contract():
+    # Discount target so strict (99%) nothing in the chain clears it --
+    # the same failure mode as a chain that just doesn't extend far enough OTM.
+    config = _entry_config(otm_min_discount_pct=0.99)
+    broker = FakeEntryBroker(buying_power=50.0, chain=_otm_put_chain())
+    trade_log = FakeTradeLog()
+    notifier = FakeAlertNotifier()
+    risk = RiskManager(config=config)
+
+    result = _try_open_position(broker, risk, trade_log, config, live=False, notifier=notifier, alerted_reasons=set())
+
+    assert result is None
+    logged = [e for e in trade_log.entries if e["event"] == "skipped_no_contract"]
+    assert len(logged) == 1
+    assert logged[0]["option_type"] == "put"
+    assert "atm_ask=3.0" in logged[0]["detail"]
+    assert "threshold=0.03" in logged[0]["detail"]
+    assert any("no usable contract" in a for a in notifier.alerts)
+
+
+def test_try_open_position_logs_diagnostics_when_no_affordable_quantity():
+    # Default-ish 70% discount finds strike 197 (ask 0.85, $85/contract) --
+    # affordable on a normal account, but not on $50 buying power.
+    config = _entry_config(otm_min_discount_pct=0.70)
+    broker = FakeEntryBroker(buying_power=50.0, chain=_otm_put_chain())
+    trade_log = FakeTradeLog()
+    notifier = FakeAlertNotifier()
+    risk = RiskManager(config=config)
+
+    result = _try_open_position(broker, risk, trade_log, config, live=False, notifier=notifier, alerted_reasons=set())
+
+    assert result is None
+    logged = [e for e in trade_log.entries if e["event"] == "skipped_no_quantity"]
+    assert len(logged) == 1
+    assert logged[0]["strike"] == 197
+    assert logged[0]["price"] == 0.85
+    assert "buying_power=50.00" in logged[0]["detail"]
+    assert "cost_per_contract=85.00" in logged[0]["detail"]
+    assert any("no affordable quantity" in a for a in notifier.alerts)

@@ -354,7 +354,19 @@ python -m iwm_0dte_agent --list-mcp-tools
 ```
 
 All proposed and executed trades are appended to `trade_log.csv`
-(configurable via `TRADE_LOG_PATH`).
+(configurable via `TRADE_LOG_PATH`), including two diagnostic events for
+signals that fired but never became a trade -- useful for tuning
+`OTM_MIN_DISCOUNT_PCT` from real numbers instead of guessing:
+
+| `event` | Meaning | Key `detail` fields |
+|---|---|---|
+| `skipped_no_contract` | `select_cheap_otm_strike`/`select_strike` found nothing (`price` is the ATM ask, for reference) | `atm_ask`, `otm_min_discount_pct`, `threshold` |
+| `skipped_no_quantity` | A contract was found (`strike`/`price`) but none of 1/3/5 contracts fit buying power | `buying_power`, `cost_per_contract` |
+
+If a signal keeps re-firing without trading, grep these two events out of
+`trade_log.csv` to see exactly what ATM ask / threshold / cost it was
+missing by, rather than reading it off the (deduplicated, one-per-day)
+Telegram alert alone.
 
 ## Backtesting
 

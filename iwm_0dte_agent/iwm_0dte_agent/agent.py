@@ -27,7 +27,7 @@ from .models import AgentStatus, Bar, OpenPosition, PositionStatus, ProposedOrde
 from .notifier import Notifier, build_notifier
 from .paper_broker import PaperBroker
 from .risk import RiskManager
-from .strategy import generate_signal, select_cheap_otm_strike, select_strike
+from .strategy import atm_contract, generate_signal, select_cheap_otm_strike, select_strike
 from .trade_log import TradeLog
 
 logger = logging.getLogger(__name__)
@@ -153,6 +153,21 @@ def _try_open_position(
         contract = select_strike(chain, signal.option_type, signal.underlying_price, config.strike_offset)
     if contract is None or contract.ask <= 0:
         logger.warning("No usable %s contract found near %.2f", signal.option_type.value, signal.underlying_price)
+        # Diagnostic detail for tuning OTM_MIN_DISCOUNT_PCT/RISK_PCT_PER_TRADE
+        # from trade_log.csv after the fact -- this branch otherwise wrote
+        # nothing to the log at all, so there was no record of *why* a
+        # signal that kept re-firing never turned into a trade.
+        atm = atm_contract(chain, signal.option_type, signal.underlying_price)
+        atm_ask = atm.ask if atm is not None else None
+        threshold = atm_ask * (1 - config.otm_min_discount_pct) if config.cheap_otm_mode and atm_ask else None
+        trade_log.write(
+            "skipped_no_contract", symbol=config.symbol, option_type=signal.option_type.value,
+            strike=0, expiration="", quantity=0, price=atm_ask or 0, reason=signal.reason,
+            detail=(
+                f"atm_ask={atm_ask} otm_min_discount_pct={config.otm_min_discount_pct} "
+                f"threshold={threshold}" if config.cheap_otm_mode else f"atm_ask={atm_ask} strike_offset={config.strike_offset}"
+            ),
+        )
         _alert_deduped(
             f"no_usable_contract:{signal.option_type.value}",
             f"Signal fired ({signal.option_type.value.upper()}, {signal.reason}) but no "
@@ -164,6 +179,12 @@ def _try_open_position(
     choices = risk.quantity_choices(buying_power, contract.ask)
     if not choices:
         logger.info("No affordable contract quantity, skipping signal: %s", signal.reason)
+        trade_log.write(
+            "skipped_no_quantity", symbol=contract.symbol, option_type=contract.option_type.value,
+            strike=contract.strike, expiration=contract.expiration, quantity=0, price=contract.ask,
+            reason=signal.reason,
+            detail=f"buying_power={buying_power:.2f} cost_per_contract={contract.ask * 100:.2f}",
+        )
         _alert_deduped(
             f"no_affordable_quantity:{signal.option_type.value}",
             f"Signal fired ({signal.option_type.value.upper()}, {signal.reason}) but no "
