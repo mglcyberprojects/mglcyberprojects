@@ -156,7 +156,10 @@ def _try_open_position(
         # Diagnostic detail for tuning OTM_MIN_DISCOUNT_PCT/RISK_PCT_PER_TRADE
         # from trade_log.csv after the fact -- this branch otherwise wrote
         # nothing to the log at all, so there was no record of *why* a
-        # signal that kept re-firing never turned into a trade.
+        # signal that kept re-firing never turned into a trade. Logged only
+        # (no Telegram alert) -- a signal that keeps missing this by a little
+        # is routine on a small/tight account, not something worth a ping
+        # for every day it happens; check trade_log.csv if you want to know.
         atm = atm_contract(chain, signal.option_type, signal.underlying_price)
         atm_ask = atm.ask if atm is not None else None
         threshold = atm_ask * (1 - config.otm_min_discount_pct) if config.cheap_otm_mode and atm_ask else None
@@ -168,28 +171,17 @@ def _try_open_position(
                 f"threshold={threshold}" if config.cheap_otm_mode else f"atm_ask={atm_ask} strike_offset={config.strike_offset}"
             ),
         )
-        _alert_deduped(
-            f"no_usable_contract:{signal.option_type.value}",
-            f"Signal fired ({signal.option_type.value.upper()}, {signal.reason}) but no "
-            f"usable contract was found -- skipped.",
-            notifier, alerted_reasons,
-        )
         return None
 
     choices = risk.quantity_choices(buying_power, contract.ask)
     if not choices:
         logger.info("No affordable contract quantity, skipping signal: %s", signal.reason)
+        # Logged only, same reasoning as the no-usable-contract branch above.
         trade_log.write(
             "skipped_no_quantity", symbol=contract.symbol, option_type=contract.option_type.value,
             strike=contract.strike, expiration=contract.expiration, quantity=0, price=contract.ask,
             reason=signal.reason,
             detail=f"buying_power={buying_power:.2f} cost_per_contract={contract.ask * 100:.2f}",
-        )
-        _alert_deduped(
-            f"no_affordable_quantity:{signal.option_type.value}",
-            f"Signal fired ({signal.option_type.value.upper()}, {signal.reason}) but no "
-            f"affordable quantity -- skipped.",
-            notifier, alerted_reasons,
         )
         return None
 

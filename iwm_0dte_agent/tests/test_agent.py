@@ -197,8 +197,8 @@ class FakeAlertNotifier:
 
 def _entry_config(**overrides) -> Config:
     defaults = dict(
-        vwap_filter=False, cheap_otm_mode=True, entry_cutoff=dt.time(23, 59),
-        hard_exit=dt.time(23, 59), max_trades_per_day=2, max_daily_loss_pct=0.5,
+        vwap_filter=False, cheap_otm_mode=True, entry_cutoff=dt.time.max,
+        hard_exit=dt.time.max, max_trades_per_day=2, max_daily_loss_pct=0.5,
     )
     defaults.update(overrides)
     return Config(**defaults)
@@ -221,7 +221,9 @@ def test_try_open_position_logs_diagnostics_when_no_usable_contract():
     assert logged[0]["option_type"] == "put"
     assert "atm_ask=3.0" in logged[0]["detail"]
     assert "threshold=0.03" in logged[0]["detail"]
-    assert any("no usable contract" in a for a in notifier.alerts)
+    # Logged, but no Telegram/terminal alert -- a signal missing the
+    # discount target isn't worth pinging about every time it happens.
+    assert notifier.alerts == []
 
 
 def test_try_open_position_logs_diagnostics_when_no_affordable_quantity():
@@ -242,4 +244,4 @@ def test_try_open_position_logs_diagnostics_when_no_affordable_quantity():
     assert logged[0]["price"] == 0.85
     assert "buying_power=50.00" in logged[0]["detail"]
     assert "cost_per_contract=85.00" in logged[0]["detail"]
-    assert any("no affordable quantity" in a for a in notifier.alerts)
+    assert notifier.alerts == []

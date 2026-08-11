@@ -306,12 +306,18 @@ alerts — the agent always has a working confirmation channel either way.
 
 What gets sent: agent start/stop, every proposed trade (entries with
 quantity-choice buttons, closes with Approve/Decline), fills, declines, order
-failures, hard-exit-forced closes, and: risk limits blocking new entries, a
-signal that fires with no usable contract or no affordable quantity, and
+failures, hard-exit-forced closes, risk limits blocking new entries, and
 unhandled errors in the agent loop -- all deduplicated to once per distinct
-reason per day, so a persistent condition (a signal that keeps re-firing, a
-stuck error) doesn't re-alert every `POLL_SECONDS` (default 60s) for the
-rest of the session.
+reason per day, so a persistent condition (a stuck error, a blocked reason
+that keeps applying) doesn't re-alert every `POLL_SECONDS` (default 60s) for
+the rest of the session.
+
+**Not sent to Telegram, logged only:** a signal that fires with no usable
+contract or no affordable quantity. On a small/tight account these are
+routine, not exceptional, so pinging about them every time would just be
+noise -- they're written to `trade_log.csv` instead (see below) with the
+actual ATM ask/threshold/cost numbers, so you can review them whenever you
+want without a Telegram message for every occurrence.
 
 Only replies from the configured `TELEGRAM_CHAT_ID` are ever accepted as an
 approval — button presses from any other chat are logged and ignored (same
@@ -363,10 +369,10 @@ signals that fired but never became a trade -- useful for tuning
 | `skipped_no_contract` | `select_cheap_otm_strike`/`select_strike` found nothing (`price` is the ATM ask, for reference) | `atm_ask`, `otm_min_discount_pct`, `threshold` |
 | `skipped_no_quantity` | A contract was found (`strike`/`price`) but none of 1/3/5 contracts fit buying power | `buying_power`, `cost_per_contract` |
 
-If a signal keeps re-firing without trading, grep these two events out of
-`trade_log.csv` to see exactly what ATM ask / threshold / cost it was
-missing by, rather than reading it off the (deduplicated, one-per-day)
-Telegram alert alone.
+Neither event sends a Telegram alert (see above) -- this CSV is the only
+place to see them. If a signal keeps re-firing without trading, grep these
+two events out of `trade_log.csv` to see exactly what ATM ask / threshold /
+cost it was missing by.
 
 ## Backtesting
 
