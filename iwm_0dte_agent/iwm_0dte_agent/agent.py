@@ -402,9 +402,18 @@ def run(live: bool, once: bool, config: Config = CONFIG) -> None:
                     broker, risk, trade_log, config, live, notifier, alerted_reasons,
                     gameplan_state, gameplan_zones,
                 )
-            _handle_status_requests(notifier, broker, risk, position, config)
         except Exception as exc:
             logger.exception("Error in agent loop iteration")
+            _maybe_alert_loop_error(exc, notifier, alerted_reasons)
+
+        # Its own try/except, deliberately separate from the trading-logic
+        # block above: a broker/strategy error there (e.g. a signal that
+        # can't fetch a quote) must not also block /status and the
+        # Positions button from responding every cycle it recurs.
+        try:
+            _handle_status_requests(notifier, broker, risk, position, config)
+        except Exception as exc:
+            logger.exception("Error handling status requests")
             _maybe_alert_loop_error(exc, notifier, alerted_reasons)
 
         if once:
