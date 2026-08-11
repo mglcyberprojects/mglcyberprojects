@@ -38,6 +38,15 @@ class Notifier(Protocol):
     # for fixed-quantity proposals (closes) that's order.quantity. 0 is
     # falsy, so `if not notifier.confirm(...)` still reads as "declined".
 
+    def confirm_live_start(self, warning_text: str) -> bool: ...
+    # One-time gate before --live is allowed to place any real order. Only
+    # called when live=True. Must require an explicit, deliberate response
+    # (not a single button tap) since this is the one confirmation standing
+    # between a --live session and real money -- TerminalNotifier requires
+    # typing the literal word LIVE; TelegramNotifier requires replying with
+    # the literal word LIVE as text within the confirm timeout. Anything
+    # else, or no response in time, returns False and the agent never starts.
+
     def request_zones(self, timeout_seconds: int) -> GameplanZones | None: ...
 
     def poll_status_requests(self) -> list[StatusRequest]: ...

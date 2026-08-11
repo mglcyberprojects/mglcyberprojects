@@ -67,6 +67,14 @@ class TerminalNotifier:
             print("Could not parse that -- expected exactly 4 numbers. Skipping trading today.")
         return zones
 
+    def confirm_live_start(self, warning_text: str) -> bool:
+        print(f"\n*** {warning_text} ***\n")
+        typed = input("Type LIVE to confirm you understand and want to proceed: ").strip()
+        if typed != "LIVE":
+            print("Aborting.")
+            return False
+        return True
+
     def confirm(self, order: ProposedOrder, live: bool) -> int:
         mode = "LIVE (real money)" if live else "PAPER (simulated)"
         print("\n" + "=" * 60)

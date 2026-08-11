@@ -17,6 +17,9 @@ class FakeNotifier:
     def confirm(self, order, live: bool) -> int:
         raise NotImplementedError
 
+    def confirm_live_start(self, warning_text: str) -> bool:
+        raise NotImplementedError
+
 
 def test_build_notifier_falls_back_to_terminal_when_unconfigured():
     config = Config(telegram_bot_token="", telegram_chat_id="")

@@ -58,3 +58,25 @@ def test_confirm_without_choices_no_returns_zero(monkeypatch):
     monkeypatch.setattr("builtins.input", lambda prompt="": "n")
 
     assert notifier.confirm(_make_order(quantity_choices=None, quantity=3), live=True) == 0
+
+
+def test_confirm_live_start_exact_live_returns_true(monkeypatch, capsys):
+    notifier = TerminalNotifier()
+    monkeypatch.setattr("builtins.input", lambda prompt="": "LIVE")
+
+    assert notifier.confirm_live_start("some warning text") is True
+    assert "some warning text" in capsys.readouterr().out
+
+
+def test_confirm_live_start_wrong_case_returns_false(monkeypatch):
+    notifier = TerminalNotifier()
+    monkeypatch.setattr("builtins.input", lambda prompt="": "live")
+
+    assert notifier.confirm_live_start("warning") is False
+
+
+def test_confirm_live_start_blank_returns_false(monkeypatch):
+    notifier = TerminalNotifier()
+    monkeypatch.setattr("builtins.input", lambda prompt="": "")
+
+    assert notifier.confirm_live_start("warning") is False

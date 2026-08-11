@@ -334,19 +334,32 @@ def _handle_status_requests(
 
 
 def run(live: bool, once: bool, config: Config = CONFIG) -> None:
+    # Built before the live-start gate below (not after, as it used to be)
+    # so the gate itself can go through notifier.confirm_live_start() --
+    # TerminalNotifier still requires typing LIVE at a keyboard;
+    # TelegramNotifier requires replying LIVE from your phone, so an
+    # unattended session (e.g. the Windows Scheduled Task) can still start
+    # --live without a human at the machine, while still requiring an
+    # explicit, deliberate confirmation rather than a single button tap.
+    notifier = build_notifier(config)
+
     if live:
-        print(
-            "\n*** LIVE MODE: this will place REAL orders on Robinhood using your "
-            "real account and money. Robinhood has no official trading API; this "
-            "uses an unofficial client (robin_stocks) that is against their Terms "
-            "of Service. 0DTE options can lose their full value within hours. ***\n"
+        if config.use_robinhood_mcp:
+            broker_line = "This connects via Robinhood's official Agentic Trading MCP server (OAuth)."
+        else:
+            broker_line = (
+                "Robinhood has no official trading API; this uses an unofficial client "
+                "(robin_stocks) that is against their Terms of Service."
+            )
+        warning = (
+            "LIVE MODE: this will place REAL orders on Robinhood using your real "
+            f"account and money. {broker_line} 0DTE options can lose their full "
+            "value within hours."
         )
-        typed = input("Type LIVE to confirm you understand and want to proceed: ").strip()
-        if typed != "LIVE":
-            print("Aborting.")
+        if not notifier.confirm_live_start(warning):
+            logger.info("LIVE start not confirmed, aborting.")
             return
 
-    notifier = build_notifier(config)
     broker = _build_broker(live, config)
 
     try:

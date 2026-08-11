@@ -40,8 +40,10 @@ first `--live` session, and what to expect during one.
   the full existing position, so there's nothing to pick. With Telegram
   configured, that approval is inline buttons in your authorized chat;
   otherwise it's typed at the terminal (a quantity for entries, `y`/`N` for
-  exits). `--live` mode additionally requires typing `LIVE` at startup
-  before the session begins.
+  exits). `--live` mode additionally requires confirming `LIVE` at startup
+  before the session begins -- typed at the terminal without Telegram
+  configured, or replied to a Telegram message when it is (see "Running
+  unattended on Windows" below).
 - **Telegram approval means whoever controls that Telegram account can
   place real orders in --live mode.** Treat the bot token and your chat id
   as credentials: keep `.env` out of git (already covered by `.gitignore`),
@@ -414,39 +416,62 @@ your real account size.
 
 ## Running unattended on Windows
 
-`deploy/run_agent.bat` + `deploy/setup_autostart.ps1` register the agent as
-a Windows Scheduled Task that starts automatically when you log in and
-restarts itself if it crashes — the closest Windows equivalent to a Linux
-`systemd` service, no extra tools to install.
+`deploy/run_agent.bat` (paper) and `deploy/run_agent_live.bat` (live) +
+`deploy/setup_autostart.ps1` register the agent as a Windows Scheduled Task
+that starts automatically when you log in and restarts itself if it
+crashes — the closest Windows equivalent to a Linux `systemd` service, no
+extra tools to install.
 
-**Telegram must be configured first (see above).** With no console window
-in front of you, a terminal `y/N` confirmation prompt would just hang
-forever waiting for input that can never arrive. `run_agent.bat` runs in
-paper mode only (no `--live`) for the same reason: `--live` mode has its
-own one-time `Type LIVE to confirm` startup prompt that also needs a real
-interactive terminal, so don't point this at `--live` yet — ask if you want
-help routing that confirmation through Telegram too before you do.
+**Telegram must be configured first (see above)** — with no console window
+in front of you, a terminal-only confirmation prompt would just hang
+forever waiting for input that can never arrive. That includes the
+one-time `Type LIVE to confirm` startup gate for `--live` mode:
+`notifier.confirm_live_start()` routes it through Telegram instead when
+Telegram is configured (reply with the literal word `LIVE` within
+`TELEGRAM_CONFIRM_TIMEOUT_SECONDS`, same timeout as trade approvals) — so
+`--live` can run fully unattended too, not just paper.
 
-Set it up:
+**Paper mode** (`run_agent.bat`, task `IWM0DTEAgent`):
 
 ```powershell
 cd iwm_0dte_agent\deploy
 .\setup_autostart.ps1
 ```
 
-That registers a task named `IWM0DTEAgent` triggered at your next logon. To
-start it immediately without logging out:
+**Live mode** (`run_agent_live.bat`, task `IWM0DTEAgentLive`) — real orders,
+real money:
+
+```powershell
+cd iwm_0dte_agent\deploy
+.\setup_autostart.ps1 -Live
+```
+
+**Never have both tasks enabled at once.** They'd both poll the same
+Telegram bot (stealing each other's replies, including your LIVE
+confirmation and trade approvals) and each tracks its own in-memory daily
+trade count, so both could independently decide it's fine to open a
+position on the same real account. `setup_autostart.ps1` prints a reminder
+to disable the other task after registering either one:
+
+```powershell
+schtasks /Change /TN IWM0DTEAgent /DISABLE       # before enabling live
+schtasks /Change /TN IWM0DTEAgentLive /DISABLE   # before going back to paper
+```
+
+Either registration triggers at your next logon. To start it immediately
+without logging out (substitute `IWM0DTEAgentLive` for the live task):
 
 ```powershell
 schtasks /Run /TN IWM0DTEAgent
 ```
 
-You'll get a console window titled "IWM 0DTE Agent" (safe to minimize, not
-to close) plus a running log at `iwm_0dte_agent\logs\agent.log`. Day-to-day
+You'll get a console window titled "IWM 0DTE Agent" (or "IWM 0DTE Agent
+LIVE") — safe to minimize, not to close — plus a running log at
+`iwm_0dte_agent\logs\agent.log` (or `logs\agent_live.log`). Day-to-day
 visibility is meant to come from Telegram, not that window — the log is a
 backstop for debugging startup failures.
 
-Stop / remove it:
+Stop / remove it (substitute the live task name/window title if applicable):
 
 ```powershell
 taskkill /FI "WINDOWTITLE eq IWM 0DTE Agent" /T /F   # stop the running agent
@@ -495,5 +520,6 @@ iwm_0dte_agent/
 tests/                  # unit tests for strategy/risk/pricing/notifier/mcp_broker/backtest
 deploy/
   run_agent.bat         # Windows restart-loop wrapper (paper mode)
-  setup_autostart.ps1   # registers run_agent.bat as a logon-triggered Scheduled Task
+  run_agent_live.bat    # Windows restart-loop wrapper (--live -- real orders)
+  setup_autostart.ps1   # registers run_agent[_live].bat as a logon-triggered Scheduled Task (-Live switch)
 ```

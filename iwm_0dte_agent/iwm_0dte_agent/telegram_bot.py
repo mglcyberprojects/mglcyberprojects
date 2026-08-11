@@ -131,6 +131,54 @@ class TelegramNotifier:
         except Exception:
             logger.exception("Failed to send Telegram alert: %s", text)
 
+    def confirm_live_start(self, warning_text: str) -> bool:
+        minutes = max(1, self._timeout_seconds // 60)
+        text = (
+            f"🔴 <b>LIVE MODE STARTUP</b>\n\n"
+            f"{_esc(warning_text)}\n\n"
+            f"Reply with the word <b>LIVE</b> (exact, all caps) within {minutes} min to "
+            f"confirm and start real-money trading, or anything else / no reply to abort."
+        )
+        try:
+            self._call("sendMessage", chat_id=self._chat_id, text=text, parse_mode="HTML")
+        except Exception:
+            logger.exception("Failed to send Telegram LIVE-start confirmation request")
+            return False
+
+        deadline = time_module.monotonic() + self._timeout_seconds
+        while time_module.monotonic() < deadline:
+            remaining = deadline - time_module.monotonic()
+            poll_timeout = max(1, min(_LONG_POLL_SECONDS, int(remaining)))
+            try:
+                updates = self._call(
+                    "getUpdates", offset=self._update_offset, timeout=poll_timeout,
+                    allowed_updates=["message"],
+                )
+            except Exception:
+                logger.exception("Telegram getUpdates failed while waiting for LIVE confirmation, retrying")
+                time_module.sleep(2)
+                continue
+
+            for update in updates:
+                self._update_offset = update["update_id"] + 1
+                message = update.get("message")
+                if not message:
+                    continue
+                chat_id = str(message.get("chat", {}).get("id", ""))
+                if chat_id != self._chat_id:
+                    logger.warning("Ignoring Telegram message from unauthorized chat %s", chat_id)
+                    continue
+                reply = (message.get("text") or "").strip()
+                if reply == "LIVE":
+                    self.alert("LIVE mode confirmed -- starting.")
+                    return True
+                self.alert(f'Aborted -- reply "{reply}" did not match "LIVE".')
+                return False
+
+        logger.warning("Telegram LIVE-start confirmation timed out after %ss, aborting", self._timeout_seconds)
+        self.alert("No LIVE confirmation received in time -- aborted.")
+        return False
+
     def confirm(self, order: ProposedOrder, live: bool) -> int:
         mode = "LIVE (real money)" if live else "PAPER (simulated)"
         mode_icon = "🟢" if live else "🧪"

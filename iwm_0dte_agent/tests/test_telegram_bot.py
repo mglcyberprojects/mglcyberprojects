@@ -246,6 +246,52 @@ def test_confirm_with_choices_times_out_and_returns_zero():
     assert result == 0
 
 
+def test_confirm_live_start_exact_live_reply_confirms():
+    notifier = make_notifier()
+    call_log = []
+
+    def fake_call(method, **params):
+        call_log.append((method, params))
+        if method == "getUpdates":
+            return [_status_update(1, text="LIVE")]
+        return {"message_id": 1}
+
+    notifier._call = fake_call
+
+    assert notifier.confirm_live_start("real money warning") is True
+    prompt = next(p for m, p in call_log if m == "sendMessage")
+    assert prompt["parse_mode"] == "HTML"
+    assert "real money warning" in prompt["text"]
+    assert "LIVE" in prompt["text"]
+
+
+def test_confirm_live_start_wrong_text_aborts():
+    notifier = make_notifier()
+    notifier._call = lambda method, **params: (
+        [_status_update(1, text="yes")] if method == "getUpdates" else {"message_id": 1}
+    )
+
+    assert notifier.confirm_live_start("warning") is False
+
+
+def test_confirm_live_start_ignores_unauthorized_chat():
+    notifier = make_notifier()
+    notifier._timeout_seconds = 0
+    notifier._call = lambda method, **params: (
+        [_status_update(1, chat_id="999", text="LIVE")] if method == "getUpdates" else {"message_id": 1}
+    )
+
+    assert notifier.confirm_live_start("warning") is False
+
+
+def test_confirm_live_start_times_out_with_no_reply():
+    notifier = make_notifier()
+    notifier._timeout_seconds = 0
+    notifier._call = lambda method, **params: [] if method == "getUpdates" else {"message_id": 1}
+
+    assert notifier.confirm_live_start("warning") is False
+
+
 def test_request_zones_sends_html_prompt_then_waits():
     notifier = make_notifier()
     call_log = []
