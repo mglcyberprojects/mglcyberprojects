@@ -418,9 +418,13 @@ your real account size.
 
 `deploy/run_agent.bat` (paper) and `deploy/run_agent_live.bat` (live) +
 `deploy/setup_autostart.ps1` register the agent as a Windows Scheduled Task
-that starts automatically when you log in and restarts itself if it
-crashes — the closest Windows equivalent to a Linux `systemd` service, no
-extra tools to install.
+that restarts itself if it crashes — the closest Windows equivalent to a
+Linux `systemd` service, no extra tools to install. The task has two
+triggers: your next Windows logon, **and** a fixed weekday clock time
+(default `09:10 AM`, see `-DailyTime`) — so it starts on its own even if
+you're not around to log in right at market open. You just need to leave
+the machine powered on and logged in (a locked screen is fine, signing out
+is not).
 
 **Telegram must be configured first (see above)** — with no console window
 in front of you, a terminal-only confirmation prompt would just hang
@@ -429,7 +433,11 @@ one-time `Type LIVE to confirm` startup gate for `--live` mode:
 `notifier.confirm_live_start()` routes it through Telegram instead when
 Telegram is configured (reply with the literal word `LIVE` within
 `TELEGRAM_CONFIRM_TIMEOUT_SECONDS`, same timeout as trade approvals) — so
-`--live` can run fully unattended too, not just paper.
+`--live` can run fully unattended too, not just paper. If you're not around
+to reply right at the trigger time, the restart loop just keeps re-sending
+that prompt every few minutes until you do (or until market close, at which
+point it stops trying until the next trading day) — no strict deadline,
+reply whenever you next check your phone.
 
 **Paper mode** (`run_agent.bat`, task `IWM0DTEAgent`):
 
@@ -458,8 +466,9 @@ schtasks /Change /TN IWM0DTEAgent /DISABLE       # before enabling live
 schtasks /Change /TN IWM0DTEAgentLive /DISABLE   # before going back to paper
 ```
 
-Either registration triggers at your next logon. To start it immediately
-without logging out (substitute `IWM0DTEAgentLive` for the live task):
+Either registration triggers at your next logon or at the configured daily
+time, whichever comes first. To start it immediately without waiting for
+either (substitute `IWM0DTEAgentLive` for the live task):
 
 ```powershell
 schtasks /Run /TN IWM0DTEAgent
