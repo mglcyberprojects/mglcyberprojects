@@ -172,6 +172,15 @@ class TelegramNotifier:
                 if reply == "LIVE":
                     self.alert("LIVE mode confirmed -- starting.")
                     return True
+                if reply.lower() in _STATUS_COMMANDS:
+                    # The persistent Positions button (or /status) stays on
+                    # screen from any prior session regardless of what this
+                    # process is currently waiting on -- a reflexive tap on
+                    # it isn't an attempt to answer this prompt, so ignore
+                    # it and keep waiting rather than aborting on it. (There's
+                    # no broker connected yet at this point in startup to
+                    # actually answer a status request with anyway.)
+                    continue
                 self.alert(f'Aborted -- reply "{reply}" did not match "LIVE".')
                 return False
 
@@ -316,6 +325,12 @@ class TelegramNotifier:
             logger.warning("Ignoring Telegram message from unauthorized chat %s", chat_id)
             return None
         text = message.get("text", "")
+        if text.strip().lower() in _STATUS_COMMANDS:
+            # Same reflexive-tap collision as confirm_live_start() -- the
+            # persistent Positions button stays on screen regardless of
+            # what's currently pending, so don't treat a tap on it as a
+            # failed zones reply.
+            return None
         zones = parse_zone_message(text)
         if zones is None:
             self.alert(f'Could not parse "{text}" -- expected 4 numbers, try again.')

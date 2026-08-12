@@ -292,6 +292,29 @@ def test_confirm_live_start_times_out_with_no_reply():
     assert notifier.confirm_live_start("warning") is False
 
 
+def test_confirm_live_start_ignores_positions_button_tap_then_confirms():
+    # The persistent Positions keyboard button stays visible from any prior
+    # session regardless of what's currently pending -- a reflexive tap on
+    # it shouldn't abort a LIVE start the way any other wrong text would.
+    notifier = make_notifier()
+    notifier._call = lambda method, **params: (
+        [_status_update(1, text="📊 Positions"), _status_update(2, text="LIVE")]
+        if method == "getUpdates" else {"message_id": 1}
+    )
+
+    assert notifier.confirm_live_start("warning") is True
+
+
+def test_confirm_live_start_ignores_status_command_then_confirms():
+    notifier = make_notifier()
+    notifier._call = lambda method, **params: (
+        [_status_update(1, text="/status"), _status_update(2, text="LIVE")]
+        if method == "getUpdates" else {"message_id": 1}
+    )
+
+    assert notifier.confirm_live_start("warning") is True
+
+
 def test_request_zones_sends_html_prompt_then_waits():
     notifier = make_notifier()
     call_log = []
@@ -314,6 +337,32 @@ def test_request_zones_sends_html_prompt_then_waits():
     prompt = prompt_calls[0]
     assert prompt["parse_mode"] == "HTML"
     assert "<code>hold_low hold_high reject_low reject_high</code>" in prompt["text"]
+
+
+def test_request_zones_ignores_positions_button_tap_then_parses():
+    # Same reflexive-tap collision as confirm_live_start() -- a Positions
+    # button tap while zones are pending shouldn't produce a "could not
+    # parse" reply, just be silently ignored while still waiting for real input.
+    notifier = make_notifier()
+    call_log = []
+
+    def fake_call(method, **params):
+        call_log.append((method, params))
+        if method == "getUpdates":
+            return [
+                _status_update(1, text="📊 Positions"),
+                _status_update(2, text="228.50 229.20 231.00 232.50"),
+            ]
+        return {"message_id": 1}
+
+    notifier._call = fake_call
+
+    result = notifier.request_zones(timeout_seconds=60)
+
+    assert result is not None
+    assert result.hold_low == 228.50
+    alert_texts = [p["text"] for m, p in call_log if m == "sendMessage" and "Could not parse" in p.get("text", "")]
+    assert alert_texts == []
 
 
 def _status_update(update_id, chat_id="42", text="/status"):
