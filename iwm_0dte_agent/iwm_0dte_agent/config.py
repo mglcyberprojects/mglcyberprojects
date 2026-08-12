@@ -95,6 +95,13 @@ class Config:
     market_close: time = field(default_factory=lambda: _env_time("MARKET_CLOSE", "16:00"))
 
     poll_seconds: int = field(default_factory=lambda: _env_int("POLL_SECONDS", 60))
+    # How often /status and the Positions button are checked for, separate
+    # from poll_seconds (which paces the trading logic: broker calls, signal
+    # evaluation). A status check is just a cheap non-blocking Telegram
+    # getUpdates call, not a broker call, so it can run far more often than
+    # the trading logic without adding real API load -- keeps status replies
+    # snappy even when poll_seconds is set high.
+    status_poll_seconds: int = field(default_factory=lambda: _env_int("STATUS_POLL_SECONDS", 5))
     trade_log_path: str = field(default_factory=lambda: os.environ.get("TRADE_LOG_PATH", "trade_log.csv"))
 
     # Telegram alerts + approve/decline confirmation. Optional -- if either

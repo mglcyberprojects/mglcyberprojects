@@ -341,9 +341,10 @@ across every message from then on, so checking positions doesn't require
 remembering or retyping `/status`. Tapping it just sends "📊 Positions" as
 an ordinary message, recognized the same way as typing the command.
 
-This is checked once per agent loop iteration, not instantly — a `/status`
-command or Refresh tap is picked up on the next cycle, so expect up to
-`POLL_SECONDS` (60s by default) of latency, not a live push.
+This is checked independently of the trading loop's `POLL_SECONDS` cadence
+— every `STATUS_POLL_SECONDS` (5s by default) instead — so `/status` and
+the Positions button reply within a few seconds rather than waiting for the
+(much slower, broker-call-driven) trading logic's next cycle.
 
 ## Running
 

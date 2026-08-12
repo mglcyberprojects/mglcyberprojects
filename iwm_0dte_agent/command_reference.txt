@@ -81,10 +81,11 @@ Approve / Decline buttons               On every proposed exit -- exits
                                          position, so there's no quantity
                                          to pick.
 
-Note: /status, Positions, and Refresh are checked once per agent loop
-cycle (POLL_SECONDS, default 60s) -- not instant. Responding to a specific
-proposed trade responds immediately (that's a dedicated wait, not the
-shared poll).
+Note: /status, Positions, and Refresh are checked every STATUS_POLL_SECONDS
+(default 5s) -- independent of POLL_SECONDS, which paces the trading logic
+(broker calls, signal evaluation) and is much slower (default 60s).
+Responding to a specific proposed trade responds immediately (that's a
+dedicated wait, not the shared poll).
 
 
 TESTS
@@ -145,7 +146,8 @@ Risk management:
 
 Session timing (24h local time -- machine's clock must actually be ET):
   MARKET_OPEN=09:30  ENTRY_CUTOFF=14:30  HARD_EXIT=15:45  MARKET_CLOSE=16:00
-  POLL_SECONDS=60                   Main loop cadence -- also /status latency ceiling
+  POLL_SECONDS=60                   Trading-logic cadence (broker calls, signal evaluation)
+  STATUS_POLL_SECONDS=5             /status and Positions button latency ceiling -- independent of POLL_SECONDS
 
 Broker connection:
   USE_ROBINHOOD_MCP=true            Official OAuth MCP path (default) -- no robin_stocks involved

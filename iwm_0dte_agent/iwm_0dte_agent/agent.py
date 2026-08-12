@@ -316,10 +316,11 @@ def _build_agent_status(
 def _handle_status_requests(
     notifier: Notifier, broker: Broker, risk: RiskManager, position: OpenPosition | None, config: Config,
 ) -> None:
-    """On-demand /status command + Refresh button, checked once per loop
-    iteration -- see poll_status_requests()'s docstring for the resulting
-    (up to POLL_SECONDS) latency. Builds one live status snapshot and reuses
-    it for every pending request this cycle, rather than re-fetching per
+    """On-demand /status command + Refresh button -- checked every
+    status_poll_seconds (default 5s), independent of poll_seconds (which
+    paces the trading logic), so replies stay snappy without evaluating
+    signals any more often. Builds one live status snapshot and reuses it
+    for every pending request this cycle, rather than re-fetching per
     request, since they'd all show the same moment-in-time numbers anyway.
     """
     pending = notifier.poll_status_requests()
@@ -331,6 +332,21 @@ def _handle_status_requests(
             notifier.post_status(status)
         else:
             notifier.update_status(req.message_id, status)
+
+
+def _check_status_safely(
+    notifier: Notifier, broker: Broker, risk: RiskManager, position: OpenPosition | None, config: Config,
+    alerted_reasons: set[tuple[dt.date, str]],
+) -> None:
+    # Its own try/except, deliberately separate from the trading-logic
+    # try/except in run()'s main loop: a broker/strategy error there (e.g. a
+    # signal that can't fetch a quote) must not also block /status and the
+    # Positions button from responding every time it recurs.
+    try:
+        _handle_status_requests(notifier, broker, risk, position, config)
+    except Exception as exc:
+        logger.exception("Error handling status requests")
+        _maybe_alert_loop_error(exc, notifier, alerted_reasons)
 
 
 def run(live: bool, once: bool, config: Config = CONFIG) -> None:
@@ -417,19 +433,22 @@ def run(live: bool, once: bool, config: Config = CONFIG) -> None:
             logger.exception("Error in agent loop iteration")
             _maybe_alert_loop_error(exc, notifier, alerted_reasons)
 
-        # Its own try/except, deliberately separate from the trading-logic
-        # block above: a broker/strategy error there (e.g. a signal that
-        # can't fetch a quote) must not also block /status and the
-        # Positions button from responding every cycle it recurs.
-        try:
-            _handle_status_requests(notifier, broker, risk, position, config)
-        except Exception as exc:
-            logger.exception("Error handling status requests")
-            _maybe_alert_loop_error(exc, notifier, alerted_reasons)
+        _check_status_safely(notifier, broker, risk, position, config, alerted_reasons)
 
         if once:
             break
-        time_module.sleep(config.poll_seconds)
+
+        # Sleep in status_poll_seconds increments (default 5s) instead of
+        # one big poll_seconds sleep, re-checking for /status and Positions
+        # taps after each -- a status check is a cheap non-blocking Telegram
+        # call, not a broker call, so this doesn't make the trading logic
+        # above (which still only runs once per poll_seconds) run any more often.
+        remaining = config.poll_seconds
+        while remaining > 0:
+            nap = max(1, min(config.status_poll_seconds, remaining))
+            time_module.sleep(nap)
+            remaining -= nap
+            _check_status_safely(notifier, broker, risk, position, config, alerted_reasons)
 
 
 def main() -> None:
