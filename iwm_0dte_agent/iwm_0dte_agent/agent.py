@@ -334,6 +334,17 @@ def _handle_status_requests(
 
 
 def run(live: bool, once: bool, config: Config = CONFIG) -> None:
+    # Bail out before touching Telegram/the broker at all if the market's
+    # already closed for the day (e.g. run_agent_live.bat's restart loop
+    # cycling overnight) -- otherwise every ~30s restart would re-send the
+    # LIVE confirmation prompt (for --live) or an Agent started/Market
+    # closed alert pair (either mode), forever, until the next calendar
+    # day. --once is exempt since it's for deliberate manual testing, e.g.
+    # checking connectivity after hours.
+    if not once and dt.datetime.now().time() >= config.market_close:
+        logger.info("Market already closed for today (%s) -- not starting a session.", config.market_close)
+        return
+
     # Built before the live-start gate below (not after, as it used to be)
     # so the gate itself can go through notifier.confirm_live_start() --
     # TerminalNotifier still requires typing LIVE at a keyboard;
