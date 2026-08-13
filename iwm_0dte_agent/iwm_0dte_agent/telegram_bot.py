@@ -376,11 +376,16 @@ class TelegramNotifier:
         return quantity
 
     def poll_status_requests(self) -> list[StatusRequest]:
-        # A single non-blocking (timeout=0) poll, meant to be called once
-        # per agent.py loop iteration -- unlike confirm()/request_zones(),
-        # this never blocks waiting for a reply, so a /status command or
-        # Refresh tap is only ever picked up on the next loop cycle (i.e.
-        # up to POLL_SECONDS of latency, not instant).
+        # A single non-blocking (timeout=0) poll, called every
+        # status_poll_seconds -- much more often than the trading loop's
+        # poll_seconds, see agent.py's _check_status_safely -- so a
+        # /status command or Refresh tap is picked up within a few seconds,
+        # not a full trading-loop cycle.
+        #
+        # Every recognized-or-not outcome is logged at INFO (not DEBUG, so
+        # it shows up without --verbose): a real incident where a tap
+        # produced no reply, with nothing here in the log to explain why,
+        # is worse than a slightly noisier log.
         try:
             updates = self._call(
                 "getUpdates", offset=self._update_offset, timeout=0,
@@ -389,6 +394,9 @@ class TelegramNotifier:
         except Exception:
             logger.exception("Telegram getUpdates failed while polling for status requests")
             return []
+
+        if updates:
+            logger.info("poll_status_requests: received %d update(s)", len(updates))
 
         found: list[StatusRequest] = []
         for update in updates:
@@ -399,20 +407,32 @@ class TelegramNotifier:
                 chat_id = str(message.get("chat", {}).get("id", ""))
                 text = (message.get("text") or "").strip().lower()
                 if chat_id == self._chat_id and text in _STATUS_COMMANDS:
+                    logger.info("poll_status_requests: recognized /status request (text=%r)", text)
                     found.append(StatusRequest(kind="new"))
+                else:
+                    logger.info(
+                        "poll_status_requests: ignoring message (chat_id=%s authorized=%s text=%r)",
+                        chat_id, chat_id == self._chat_id, text,
+                    )
                 continue
 
             cq = update.get("callback_query")
             if cq is None:
+                logger.info("poll_status_requests: update had neither message nor callback_query: %r", update)
                 continue
             chat_id = str(cq.get("message", {}).get("chat", {}).get("id", ""))
             data = cq.get("data", "")
             if chat_id != self._chat_id or not data.startswith("refresh:"):
+                logger.info(
+                    "poll_status_requests: ignoring callback_query (chat_id=%s authorized=%s data=%r)",
+                    chat_id, chat_id == self._chat_id, data,
+                )
                 continue  # not ours, or a stale/foreign refresh tap
             try:
                 self._call("answerCallbackQuery", callback_query_id=cq["id"], text="Refreshing…")
             except Exception:
                 logger.exception("Failed to acknowledge Telegram refresh callback")
+            logger.info("poll_status_requests: recognized Refresh tap (message_id=%s)", cq["message"]["message_id"])
             found.append(StatusRequest(kind="refresh", message_id=cq["message"]["message_id"]))
         return found
 
