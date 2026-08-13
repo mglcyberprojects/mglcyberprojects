@@ -24,11 +24,11 @@ from .broker import Broker, RobinhoodBroker
 from .config import CONFIG, Config
 from .gameplan_strategy import GameplanState, GameplanZones
 from .mcp_broker import MCPBroker
-from .models import AgentStatus, Bar, OpenPosition, PositionStatus, ProposedOrder, TradeSignal
+from .models import AgentStatus, Bar, OpenPosition, OptionType, PositionStatus, ProposedOrder, TradeSignal
 from .notifier import Notifier, build_notifier
 from .paper_broker import PaperBroker
 from .risk import RiskManager
-from .strategy import atm_contract, generate_signal, select_strike_by_dollar_offset
+from .strategy import atm_contract, generate_signal, retest_signal, select_strike_by_dollar_offset
 from .trade_log import TradeLog
 
 logger = logging.getLogger(__name__)
@@ -118,7 +118,7 @@ def _generate_signal(
             notifier.alert(f"Gameplan: resistance broken (close above rejection zone high {gameplan_zones.reject_high:g})")
         return evaluation.signal
 
-    return generate_signal(
+    signal = generate_signal(
         bars, config.market_open, config.orb_minutes,
         use_vwap_filter=config.vwap_filter,
         use_volume_filter=config.volume_filter,
@@ -126,6 +126,28 @@ def _generate_signal(
         volume_lookback_bars=config.volume_lookback_bars,
         breakout_buffer_pct=config.breakout_buffer_pct,
         use_ema_cloud_filter=config.ema_cloud_filter,
+        ftfc_mode=config.ftfc_mode,
+        use_dynamic_profit_target=config.dynamic_profit_target,
+        dynamic_pt_multiplier=config.dynamic_pt_multiplier,
+    )
+    if signal is not None or not config.enable_retest_entries:
+        return signal
+
+    # Retest entries are a second, independent entry mechanism layered on
+    # the same ORB levels -- only tried when the primary ORB+EMA-cloud
+    # breakout signal above didn't fire this cycle, so at most one signal
+    # (and therefore at most one entry) comes out of a single poll cycle.
+    return retest_signal(
+        bars, config.market_open, config.orb_minutes,
+        use_continuation=config.retest_continuation,
+        use_reversal=config.retest_reversal,
+        require_trend_context=config.retest_require_trend_context,
+        trend_lookback=config.retest_trend_lookback,
+        rr_ratio=config.retest_rr_ratio,
+        sl_atr_mult=config.retest_sl_atr_mult,
+        use_cloud_filter=config.retest_cloud_filter,
+        use_ftfc_filter=config.retest_ftfc_filter,
+        ftfc_mode=config.ftfc_mode,
     )
 
 
@@ -180,6 +202,16 @@ def _try_open_position(
         )
         return None
 
+    reason = signal.reason
+    if signal.underlying_stop_price is not None or signal.underlying_target_price is not None:
+        # Surfaced here (not just stored on the position) so the human
+        # approving the trade sees the underlying-price-based stop/target
+        # -- from a dynamic profit target or a retest entry -- before
+        # confirming, not just after the fact in trade_log.csv.
+        stop_str = f"{signal.underlying_stop_price:.2f}" if signal.underlying_stop_price is not None else "n/a"
+        target_str = f"{signal.underlying_target_price:.2f}" if signal.underlying_target_price is not None else "n/a"
+        reason += f" [underlying stop={stop_str} target={target_str}]"
+
     proposed = ProposedOrder(
         contract=contract,
         quantity=choices[0],
@@ -187,12 +219,12 @@ def _try_open_position(
         limit_price=contract.ask,
         stop_loss_price=round(contract.ask * (1 - config.stop_loss_pct), 2),
         profit_target_price=round(contract.ask * (1 + config.profit_target_pct), 2),
-        reason=signal.reason,
+        reason=reason,
     )
     trade_log.write(
         "proposed_open", symbol=contract.symbol, option_type=contract.option_type.value,
         strike=contract.strike, expiration=contract.expiration, quantity=0,
-        price=contract.ask, reason=f"{signal.reason} (choices: {choices})",
+        price=contract.ask, reason=f"{reason} (choices: {choices})",
     )
 
     quantity = notifier.confirm(proposed, live)
@@ -227,6 +259,8 @@ def _try_open_position(
         stop_loss_price=proposed.stop_loss_price,
         profit_target_price=proposed.profit_target_price,
         opened_at=dt.datetime.now(),
+        underlying_stop_price=signal.underlying_stop_price,
+        underlying_target_price=signal.underlying_target_price,
     )
 
 
@@ -234,6 +268,28 @@ def _check_exit(position: OpenPosition, broker: Broker, config: Config, risk: Ri
     now = dt.datetime.now().time()
     if risk.is_hard_exit_time(now):
         return f"hard exit time reached ({config.hard_exit})"
+
+    # Underlying-price-based triggers (dynamic profit target / retest
+    # entries) -- checked IN ADDITION to the premium-based stop/target
+    # below, not instead of them: whichever trips first closes the
+    # position. Only fetched when the position actually has one of these
+    # set, so ordinary positions don't pay for an extra quote call.
+    if position.underlying_stop_price is not None or position.underlying_target_price is not None:
+        underlying = broker.get_underlying_price(position.contract.symbol)
+        is_call = position.contract.option_type == OptionType.CALL
+        stop = position.underlying_stop_price
+        target = position.underlying_target_price
+        if stop is not None:
+            if is_call and underlying <= stop:
+                return f"underlying stop hit (price {underlying:.2f} <= {stop:.2f})"
+            if not is_call and underlying >= stop:
+                return f"underlying stop hit (price {underlying:.2f} >= {stop:.2f})"
+        if target is not None:
+            if is_call and underlying >= target:
+                return f"underlying target hit (price {underlying:.2f} >= {target:.2f})"
+            if not is_call and underlying <= target:
+                return f"underlying target hit (price {underlying:.2f} <= {target:.2f})"
+
     quote = broker.get_option_quote(position.contract.contract_id)
     if quote.bid <= position.stop_loss_price:
         return f"stop loss hit (bid {quote.bid:.2f} <= {position.stop_loss_price:.2f})"

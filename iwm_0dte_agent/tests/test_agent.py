@@ -1,6 +1,6 @@
 import datetime as dt
 
-from iwm_0dte_agent.agent import _build_agent_status, _handle_status_requests, _try_open_position
+from iwm_0dte_agent.agent import _build_agent_status, _check_exit, _handle_status_requests, _try_open_position
 from iwm_0dte_agent.config import Config
 from iwm_0dte_agent.models import Bar, OpenPosition, OptionContract, OptionType
 from iwm_0dte_agent.notifier import StatusRequest
@@ -8,11 +8,13 @@ from iwm_0dte_agent.risk import RiskManager
 
 
 class FakeBroker:
-    def __init__(self, quote_bid: float, buying_power: float):
+    def __init__(self, quote_bid: float, buying_power: float, underlying_price: float = 228.0):
         self.quote_bid = quote_bid
         self.buying_power = buying_power
+        self.underlying_price = underlying_price
         self.get_option_quote_calls = 0
         self.get_buying_power_calls = 0
+        self.get_underlying_price_calls = 0
 
     def get_option_quote(self, contract_id):
         self.get_option_quote_calls += 1
@@ -21,6 +23,10 @@ class FakeBroker:
     def get_buying_power(self):
         self.get_buying_power_calls += 1
         return self.buying_power
+
+    def get_underlying_price(self, symbol):
+        self.get_underlying_price_calls += 1
+        return self.underlying_price
 
 
 class FakeStatusNotifier:
@@ -39,12 +45,92 @@ class FakeStatusNotifier:
         self.updated.append((message_id, status))
 
 
-def _make_position(entry_price=2.00, stop_loss=1.00, profit_target=4.00) -> OpenPosition:
-    contract = OptionContract("IWM", 228.0, OptionType.CALL, "2026-08-10", 2.00, 2.05, 2.02, "instr-1")
+def _make_position(
+    entry_price=2.00, stop_loss=1.00, profit_target=4.00, option_type=OptionType.CALL,
+    underlying_stop_price=None, underlying_target_price=None,
+) -> OpenPosition:
+    contract = OptionContract("IWM", 228.0, option_type, "2026-08-10", 2.00, 2.05, 2.02, "instr-1")
     return OpenPosition(
         contract=contract, quantity=3, entry_price=entry_price,
         stop_loss_price=stop_loss, profit_target_price=profit_target, opened_at=dt.datetime.now(),
+        underlying_stop_price=underlying_stop_price, underlying_target_price=underlying_target_price,
     )
+
+
+# --- _check_exit: underlying-price-based triggers (dynamic PT / retest entries) ---
+
+def _exit_check_config() -> Config:
+    return Config(hard_exit=dt.time.max)
+
+
+def test_check_exit_no_underlying_fields_skips_the_extra_broker_call():
+    position = _make_position()  # underlying_stop/target both None
+    broker = FakeBroker(quote_bid=2.50, buying_power=25_000.0)  # bid between stop(1.00) and target(4.00)
+    risk = RiskManager(config=_exit_check_config())
+
+    assert _check_exit(position, broker, _exit_check_config(), risk) is None
+    assert broker.get_underlying_price_calls == 0
+
+
+def test_check_exit_underlying_stop_hit_for_call_position():
+    position = _make_position(option_type=OptionType.CALL, underlying_stop_price=225.0)
+    # Premium bid is still comfortably between stop/target -- only the
+    # underlying-price stop should be what trips this.
+    broker = FakeBroker(quote_bid=2.50, buying_power=25_000.0, underlying_price=224.0)
+    risk = RiskManager(config=_exit_check_config())
+
+    reason = _check_exit(position, broker, _exit_check_config(), risk)
+    assert reason is not None
+    assert "underlying stop hit" in reason
+
+
+def test_check_exit_underlying_target_hit_for_call_position():
+    position = _make_position(option_type=OptionType.CALL, underlying_target_price=230.0)
+    broker = FakeBroker(quote_bid=2.50, buying_power=25_000.0, underlying_price=231.0)
+    risk = RiskManager(config=_exit_check_config())
+
+    reason = _check_exit(position, broker, _exit_check_config(), risk)
+    assert reason is not None
+    assert "underlying target hit" in reason
+
+
+def test_check_exit_underlying_stop_hit_for_put_position():
+    # PUT: stop is on the UPSIDE (price rising against the put).
+    position = _make_position(option_type=OptionType.PUT, underlying_stop_price=230.0)
+    broker = FakeBroker(quote_bid=2.50, buying_power=25_000.0, underlying_price=231.0)
+    risk = RiskManager(config=_exit_check_config())
+
+    reason = _check_exit(position, broker, _exit_check_config(), risk)
+    assert reason is not None
+    assert "underlying stop hit" in reason
+
+
+def test_check_exit_underlying_target_hit_for_put_position():
+    # PUT: target is on the DOWNSIDE (price falling in the put's favor).
+    position = _make_position(option_type=OptionType.PUT, underlying_target_price=220.0)
+    broker = FakeBroker(quote_bid=2.50, buying_power=25_000.0, underlying_price=219.0)
+    risk = RiskManager(config=_exit_check_config())
+
+    reason = _check_exit(position, broker, _exit_check_config(), risk)
+    assert reason is not None
+    assert "underlying target hit" in reason
+
+
+def test_check_exit_falls_back_to_premium_stop_when_underlying_hasnt_moved():
+    # Underlying stop/target are set but not yet hit -- the existing
+    # premium-based stop_loss_price is still checked as normal (additive,
+    # not a replacement).
+    position = _make_position(
+        option_type=OptionType.CALL, stop_loss=1.00, profit_target=4.00,
+        underlying_stop_price=200.0, underlying_target_price=260.0,
+    )
+    broker = FakeBroker(quote_bid=0.50, buying_power=25_000.0, underlying_price=228.0)  # bid <= stop_loss(1.00)
+    risk = RiskManager(config=_exit_check_config())
+
+    reason = _check_exit(position, broker, _exit_check_config(), risk)
+    assert reason is not None
+    assert "stop loss hit" in reason
+    assert broker.get_underlying_price_calls == 1  # still checked, just didn't trip
 
 
 def test_build_agent_status_with_open_position_computes_unrealized_pnl():

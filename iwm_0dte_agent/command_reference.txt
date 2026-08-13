@@ -126,8 +126,32 @@ Strategy & signal quality:
   VOLUME_LOOKBACK_BARS=6
   BREAKOUT_BUFFER_PCT=0.0           Off by default (0). If set, close must clear the ORB level by
                                      this fraction (e.g. 0.001 = 0.1%), not just tick through it.
+  FTFC_MODE=off                     off|daily|full. Requires the current daily (and, for "full",
+                                     60m/30m) candle(s) to also point the breakout's direction.
   STRIKE_DOLLAR_OFFSET=1.0          CALL targets underlying_price + this many dollars, PUT targets
                                      underlying_price - this many dollars; nearest real strike wins.
+
+Dynamic profit target (ORB entries only, off by default):
+  DYNAMIC_PROFIT_TARGET=false       true = ORB entries also get an underlying-price target
+                                     (DYNAMIC_PT_MULTIPLIER x the breakout candle's own range),
+                                     checked IN ADDITION to PROFIT_TARGET_PCT, not instead of it.
+  DYNAMIC_PT_MULTIPLIER=2.0
+
+Retest entries (a second, independent entry mechanism, off by default):
+  ENABLE_RETEST_ENTRIES=false       true = also try a retest-of-the-ORB-level + candlestick-pattern
+                                     entry (Hammer/Bull Engulfing or Shooting Star/Bear Engulfing)
+                                     whenever the primary ORB+EMA-cloud signal doesn't fire.
+  RETEST_CONTINUATION=true          Pattern agrees with the original breakout direction.
+  RETEST_REVERSAL=true              Pattern fades the original breakout instead.
+  RETEST_RR_RATIO=2.0               Underlying-price-based R:R target, independent of
+                                     STOP_LOSS_PCT/PROFIT_TARGET_PCT (which still apply too).
+  RETEST_SL_ATR_MULT=0.0            Pushes the stop beyond the retest candle's wick by this many
+                                     ATR(14)s. 0 = stop sits exactly on the wick.
+  RETEST_REQUIRE_TREND_CONTEXT=true True Hammer/Shooting Star requires a prior local downtrend/
+                                     uptrend (else it's a Hanging Man/Inverted Hammer).
+  RETEST_TREND_LOOKBACK=5
+  RETEST_CLOUD_FILTER=false         Also require EMA_CLOUD_FILTER-style confluence for retest entries.
+  RETEST_FTFC_FILTER=false          Also require FTFC_MODE-style continuity for retest entries.
 
 Risk management:
   RISK_PCT_PER_TRADE=0.01           backtest.py sizing only. Live/paper entries never use this --

@@ -48,6 +48,14 @@ class TradeSignal:
     orb_high: float | None = None
     orb_low: float | None = None
     vwap: float | None = None
+    # Underlying-price-based exit triggers, additive to the premium-based
+    # stop_loss_price/profit_target_price computed downstream from
+    # STOP_LOSS_PCT/PROFIT_TARGET_PCT -- never a replacement for them (see
+    # agent.py's _check_exit). Retest entries always set both (their whole
+    # R:R risk system is underlying-price-based); dynamic-profit-target ORB
+    # entries set only underlying_target_price. None for everything else.
+    underlying_stop_price: float | None = None
+    underlying_target_price: float | None = None
 
 
 @dataclass(frozen=True)
@@ -89,6 +97,11 @@ class OpenPosition:
     stop_loss_price: float
     profit_target_price: float
     opened_at: datetime
+    # Carried over from TradeSignal when set -- see TradeSignal's docstring
+    # comment above. Checked in addition to stop_loss_price/profit_target_price,
+    # not instead of them.
+    underlying_stop_price: float | None = None
+    underlying_target_price: float | None = None
 
 
 @dataclass(frozen=True)

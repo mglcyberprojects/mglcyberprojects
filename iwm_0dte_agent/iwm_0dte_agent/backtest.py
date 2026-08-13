@@ -33,7 +33,7 @@ from .market_data import download_bars
 from .models import Bar, OptionType, TradeSignal
 from .pricing import synthetic_chain
 from .risk import RiskManager
-from .strategy import generate_signal, select_strike_by_dollar_offset
+from .strategy import generate_signal, retest_signal, select_strike_by_dollar_offset
 
 STARTING_BUYING_POWER = 25_000.0
 
@@ -95,14 +95,32 @@ def _generate_signal(
             require_bear_close=config.gameplan_require_bear_close,
         )
         return evaluation.signal
-    return generate_signal(
-        bars[: i + 1], config.market_open, config.orb_minutes,
+    bars_so_far = bars[: i + 1]
+    signal = generate_signal(
+        bars_so_far, config.market_open, config.orb_minutes,
         use_vwap_filter=config.vwap_filter,
         use_volume_filter=config.volume_filter,
         volume_multiplier=config.volume_multiplier,
         volume_lookback_bars=config.volume_lookback_bars,
         breakout_buffer_pct=config.breakout_buffer_pct,
         use_ema_cloud_filter=config.ema_cloud_filter,
+        ftfc_mode=config.ftfc_mode,
+        use_dynamic_profit_target=config.dynamic_profit_target,
+        dynamic_pt_multiplier=config.dynamic_pt_multiplier,
+    )
+    if signal is not None or not config.enable_retest_entries:
+        return signal
+    return retest_signal(
+        bars_so_far, config.market_open, config.orb_minutes,
+        use_continuation=config.retest_continuation,
+        use_reversal=config.retest_reversal,
+        require_trend_context=config.retest_require_trend_context,
+        trend_lookback=config.retest_trend_lookback,
+        rr_ratio=config.retest_rr_ratio,
+        sl_atr_mult=config.retest_sl_atr_mult,
+        use_cloud_filter=config.retest_cloud_filter,
+        use_ftfc_filter=config.retest_ftfc_filter,
+        ftfc_mode=config.ftfc_mode,
     )
 
 
@@ -141,6 +159,25 @@ def simulate_day(
             exit_reason = None
             if now_time >= config.hard_exit:
                 exit_reason = f"hard exit time reached ({config.hard_exit})"
+
+            # Underlying-price-based triggers (dynamic profit target /
+            # retest entries), additive to the premium-based stop/target
+            # below -- mirrors agent.py's _check_exit. bar.close is the
+            # current underlying price at this point in the replay.
+            if exit_reason is None and (position["underlying_stop"] is not None or position["underlying_target"] is not None):
+                is_call = position["option_type"] == OptionType.CALL
+                stop = position["underlying_stop"]
+                target = position["underlying_target"]
+                if stop is not None:
+                    if is_call and bar.close <= stop:
+                        exit_reason = f"underlying stop hit (price {bar.close:.2f} <= {stop:.2f})"
+                    elif not is_call and bar.close >= stop:
+                        exit_reason = f"underlying stop hit (price {bar.close:.2f} >= {stop:.2f})"
+                if exit_reason is None and target is not None:
+                    if is_call and bar.close >= target:
+                        exit_reason = f"underlying target hit (price {bar.close:.2f} >= {target:.2f})"
+                    elif not is_call and bar.close <= target:
+                        exit_reason = f"underlying target hit (price {bar.close:.2f} <= {target:.2f})"
 
             quote = _quote_for(config, symbol, day, bar.timestamp, bar.close, position["strike"], position["option_type"])
             if quote is None:
@@ -188,6 +225,8 @@ def simulate_day(
             "entry_price": contract.ask, "entry_time": bar.timestamp, "quantity": quantity,
             "stop_loss": round(contract.ask * (1 - config.stop_loss_pct), 2),
             "profit_target": round(contract.ask * (1 + config.profit_target_pct), 2),
+            "underlying_stop": signal.underlying_stop_price,
+            "underlying_target": signal.underlying_target_price,
         }
         risk.record_trade_opened()
 

@@ -135,3 +135,81 @@ def test_simulate_day_picks_strike_by_dollar_offset():
     trade = result.trades[0]
     assert trade.option_type == OptionType.CALL
     assert trade.strike == 105.0
+
+
+def test_simulate_day_dynamic_profit_target_closes_on_underlying_move():
+    # Breakout candle (9:45) has range 104-99=5.0; with
+    # dynamic_pt_multiplier=1.0 the underlying target is 104 + 5*1 = 109.
+    # The next bar's close (110) reaches it -- confirms the underlying-price
+    # exit trigger fires end-to-end through simulate_day, independent of
+    # the option premium's synthetic price.
+    bars = [
+        bar(9, 30, 100, 101, 99, 100.5),
+        bar(9, 35, 100.5, 102, 100, 100.8),
+        bar(9, 40, 100.8, 101.5, 98.5, 99.0),
+        bar(9, 45, 99.0, 104, 99.0, 104.0),      # breakout; range=5.0
+        bar(9, 50, 104.0, 110.5, 103.8, 110.0),  # underlying rallies past the 109 target
+    ]
+    config = make_config(
+        vwap_filter=False, dynamic_profit_target=True, dynamic_pt_multiplier=1.0,
+        hard_exit=dt.time(9, 55),
+    )
+
+    result = simulate_day(bars, config, starting_buying_power=25_000.0)
+
+    assert len(result.trades) == 1
+    trade = result.trades[0]
+    assert trade.option_type == OptionType.CALL
+    assert trade.exit_time.time() == dt.time(9, 50)
+    assert "underlying target hit" in trade.exit_reason
+
+
+def test_simulate_day_retest_entry_fires_when_primary_breakout_is_blocked():
+    # breakout_buffer_pct=0.05 blocks the PRIMARY ORB signal at 9:45 (close
+    # 104 doesn't clear orb_high(102) by 5%) -- but retest_signal() doesn't
+    # take a buffer at all, so it still recognizes 9:45 as a breakout and
+    # fires a continuation-long entry on the 9:50 hammer-shaped retest of
+    # orb_high. The 9:55 bar then rallies past the retest's own R:R target
+    # (108.5) -- an "underlying target hit" exit is only possible via a
+    # retest (or dynamic-PT) entry, so seeing it here confirms the retest
+    # fallback -- not the primary signal -- is what actually opened this.
+    bars = [
+        bar(9, 30, 100, 101, 99, 100.5),
+        bar(9, 35, 100.5, 102, 100, 100.8),
+        bar(9, 40, 100.8, 101.5, 98.5, 99.0),
+        bar(9, 45, 99.0, 104, 99.0, 104.0),        # breakout close 104, buffer blocks the primary signal
+        bar(9, 50, 103.0, 103.6, 101.0, 103.5),    # retest: hammer shape (low wicks to orb_high area)
+        bar(9, 55, 103.5, 109.2, 103.4, 109.0),    # rallies past the retest's target (108.5)
+    ]
+    config = make_config(
+        vwap_filter=False, breakout_buffer_pct=0.05, enable_retest_entries=True,
+        retest_require_trend_context=False, hard_exit=dt.time(10, 0),
+    )
+
+    result = simulate_day(bars, config, starting_buying_power=25_000.0)
+
+    assert len(result.trades) == 1
+    trade = result.trades[0]
+    assert trade.option_type == OptionType.CALL
+    assert trade.entry_time.time() == dt.time(9, 50)
+    assert "underlying target hit" in trade.exit_reason
+
+
+def test_simulate_day_retest_entries_off_by_default_does_not_fire():
+    # Same setup as the retest test above (primary signal blocked by the
+    # 5% buffer at every bar, close never clears 102*1.05=107.1), but
+    # enable_retest_entries left at its default (False) -- with no retest
+    # fallback, nothing should trade at all.
+    bars = [
+        bar(9, 30, 100, 101, 99, 100.5),
+        bar(9, 35, 100.5, 102, 100, 100.8),
+        bar(9, 40, 100.8, 101.5, 98.5, 99.0),
+        bar(9, 45, 99.0, 104, 99.0, 104.0),
+        bar(9, 50, 103.0, 103.6, 101.0, 103.5),
+        bar(9, 55, 103.5, 107.0, 103.4, 106.5),  # rallies, but still under the 107.1 buffer threshold
+    ]
+    config = make_config(vwap_filter=False, breakout_buffer_pct=0.05, hard_exit=dt.time(10, 0))
+
+    result = simulate_day(bars, config, starting_buying_power=25_000.0)
+
+    assert result.trades == []

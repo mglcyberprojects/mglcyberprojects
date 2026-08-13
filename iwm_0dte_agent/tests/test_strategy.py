@@ -3,9 +3,12 @@ import datetime as dt
 from iwm_0dte_agent.models import Bar, OptionContract, OptionType
 from iwm_0dte_agent.strategy import (
     atm_contract,
+    atr,
     ema_cloud_bias,
+    ftfc_allows,
     generate_signal,
     opening_range,
+    retest_signal,
     select_strike_by_dollar_offset,
     vwap,
 )
@@ -363,3 +366,234 @@ def test_generate_signal_ema_cloud_filter_allows_breakout_with_confluence():
     )
     assert signal is not None
     assert signal.option_type == OptionType.CALL
+
+
+# --- FTFC (Full Timeframe Continuity) ---
+
+def _ftfc_bars():
+    # day_open=100 (9:30); price rises to 110 by the top of the hour (10:00,
+    # also a 30-min bucket boundary), then pulls back to 105 -- daily trend
+    # is still bullish (105 > 100) but the CURRENT hour/half-hour candle is
+    # bearish (105 < 110), so "daily" and "full" modes disagree.
+    return [
+        bar(0, 100, 100, 100, 100),    # 9:30 -> day_open = 100
+        bar(30, 110, 110, 110, 110),   # 10:00 -> h1_open = m30_open = 110
+        bar(35, 110, 110, 105, 105),   # 10:05 -> latest close = 105
+    ]
+
+
+def test_ftfc_allows_off_mode_always_true():
+    bars = _ftfc_bars()
+    assert ftfc_allows(bars, OptionType.CALL, "off") is True
+    assert ftfc_allows(bars, OptionType.PUT, "off") is True
+
+
+def test_ftfc_allows_empty_bars_always_true():
+    assert ftfc_allows([], OptionType.CALL, "full") is True
+
+
+def test_ftfc_allows_daily_mode_checks_only_daily_candle():
+    bars = _ftfc_bars()
+    assert ftfc_allows(bars, OptionType.CALL, "daily") is True   # 105 > day_open 100
+    assert ftfc_allows(bars, OptionType.PUT, "daily") is False
+
+
+def test_ftfc_allows_full_mode_also_requires_60m_30m_agreement():
+    bars = _ftfc_bars()
+    # Daily is bullish, but the current hour/half-hour candle (open 110,
+    # close 105) is bearish -- "full" mode should block the CALL that
+    # "daily" mode alone would allow.
+    assert ftfc_allows(bars, OptionType.CALL, "full") is False
+    assert ftfc_allows(bars, OptionType.PUT, "full") is False
+
+
+# --- ATR ---
+
+def test_atr_fewer_than_length_samples_uses_simple_average():
+    bars = [bar(0, 9, 10, 8, 9), bar(1, 9, 11, 9, 10), bar(2, 10, 12, 10, 11)]
+    # TR(bar2->bar1)=max(2,|11-9|,|9-9|)=2; TR(bar3->bar2)=max(2,|12-10|,|10-10|)=2
+    assert atr(bars, length=14) == 2.0
+
+
+def test_atr_constant_true_range_converges_to_that_value():
+    # high-low=2 and close=100 (flat) on every bar -> True Range is exactly
+    # 2 on every sample, so both the simple-average and Wilder-smoothed
+    # branches should agree, regardless of sample count.
+    bars = [bar(i, 100, 101, 99, 100) for i in range(20)]
+    assert atr(bars, length=14) == 2.0
+
+
+def test_atr_needs_at_least_two_bars():
+    assert atr([]) is None
+    assert atr([bar(0, 100, 101, 99, 100)]) is None
+
+
+# --- Retest entry signals ---
+
+_RANGE_BARS = [
+    bar(0, 100, 101, 99, 100.5),
+    bar(5, 100.5, 102, 100, 100.8),
+    bar(10, 100.8, 101.5, 98.5, 99.0),
+]  # orb_high=102, orb_low=98.5
+
+
+def test_retest_signal_none_without_a_prior_breakout():
+    # Stays inside the range the whole time -- nothing to retest.
+    bars = _RANGE_BARS + [bar(15, 99.0, 101.0, 99.0, 100.0)]
+    assert retest_signal(bars, MARKET_OPEN, orb_minutes=15) is None
+
+
+def test_retest_signal_continuation_long_on_hammer_at_orb_high_retest():
+    breakout = bar(15, 99.0, 105, 99.0, 104.0)  # close 104 > orb_high 102
+    # Hammer: small body (0.5), long lower wick (2.0 > body*2), tiny upper wick.
+    retest = bar(20, 103.0, 103.6, 101.0, 103.5)
+    bars = _RANGE_BARS + [breakout, retest]
+
+    signal = retest_signal(bars, MARKET_OPEN, orb_minutes=15, require_trend_context=False)
+
+    assert signal is not None
+    assert signal.option_type == OptionType.CALL
+    assert signal.reason.startswith("retest continuation")
+    assert signal.underlying_price == 103.5
+    assert signal.underlying_stop_price == 101.0  # retest candle's low (sl_atr_mult=0)
+    assert signal.underlying_target_price == 103.5 + (103.5 - 101.0) * 2.0  # rr_ratio=2.0 default
+
+
+def test_retest_signal_continuation_short_on_shooting_star_at_orb_low_retest():
+    breakout = bar(15, 99.0, 99.0, 95.0, 96.0)  # close 96 < orb_low 98.5
+    # Shooting star: small body (0.5), long upper wick (2.0 > body*2), tiny lower wick.
+    retest = bar(20, 97.0, 99.0, 96.4, 96.5)
+    bars = _RANGE_BARS + [breakout, retest]
+
+    signal = retest_signal(bars, MARKET_OPEN, orb_minutes=15, require_trend_context=False)
+
+    assert signal is not None
+    assert signal.option_type == OptionType.PUT
+    assert signal.reason.startswith("retest continuation")
+    assert signal.underlying_price == 96.5
+    assert signal.underlying_stop_price == 99.0  # retest candle's high
+    assert signal.underlying_target_price == 96.5 - (99.0 - 96.5) * 2.0
+
+
+def test_retest_signal_reversal_fires_against_the_original_breakout():
+    breakout = bar(15, 99.0, 99.0, 95.0, 96.0)  # broke DOWN, close 96 < orb_low 98.5
+    # But the retest candle is a bullish hammer (long lower wick), fading the breakdown.
+    retest = bar(20, 98.3, 98.55, 97.0, 98.0)
+    bars = _RANGE_BARS + [breakout, retest]
+
+    signal = retest_signal(bars, MARKET_OPEN, orb_minutes=15, require_trend_context=False)
+
+    assert signal is not None
+    assert signal.option_type == OptionType.CALL
+    assert signal.reason.startswith("retest reversal")
+
+
+def test_retest_signal_trend_context_gates_hanging_man_shaped_hammer():
+    # Same hammer shape as the continuation test above, but this time it
+    # follows a local UPTREND (breakout close 102.5 -> retest close 104.6),
+    # which makes it a Hanging Man, not a true Hammer -- a weak/contested
+    # shape, not a reliable bull signal.
+    breakout = bar(15, 99.0, 103, 99.0, 102.5)
+    filler = [
+        bar(20, 102.5, 103.2, 102.4, 103.0),
+        bar(25, 103.0, 103.7, 102.9, 103.5),
+        bar(30, 103.5, 104.2, 103.4, 104.0),
+        bar(35, 104.0, 104.5, 103.9, 104.3),
+    ]
+    retest = bar(40, 104.3, 104.7, 101.0, 104.6)  # hammer shape, low wicks to 101
+    bars = _RANGE_BARS + [breakout] + filler + [retest]
+
+    blocked = retest_signal(bars, MARKET_OPEN, orb_minutes=15, require_trend_context=True, trend_lookback=5)
+    assert blocked is None
+
+    allowed = retest_signal(bars, MARKET_OPEN, orb_minutes=15, require_trend_context=False, trend_lookback=5)
+    assert allowed is not None
+    assert allowed.option_type == OptionType.CALL
+
+
+def test_retest_signal_continuation_toggle_off_suppresses_continuation():
+    breakout = bar(15, 99.0, 105, 99.0, 104.0)
+    retest = bar(20, 103.0, 103.6, 101.0, 103.5)
+    bars = _RANGE_BARS + [breakout, retest]
+
+    assert retest_signal(
+        bars, MARKET_OPEN, orb_minutes=15, require_trend_context=False, use_continuation=False,
+    ) is None
+
+
+# --- Dynamic profit target ---
+
+def test_generate_signal_dynamic_profit_target_sets_underlying_target_for_call():
+    bars = [
+        bar(0, 100, 101, 99, 100.5),
+        bar(5, 100.5, 102, 100, 100.8),
+        bar(10, 100.8, 101.5, 98.5, 99.0),
+        bar(15, 99.0, 103, 99.0, 102.5),  # breaks above ORB high (102); range = 103-99 = 4.0
+    ]
+    signal = generate_signal(
+        bars, MARKET_OPEN, orb_minutes=15, use_vwap_filter=False, use_volume_filter=False,
+        use_ema_cloud_filter=False, use_dynamic_profit_target=True, dynamic_pt_multiplier=2.0,
+    )
+    assert signal is not None
+    assert signal.underlying_target_price == 102.5 + (103 - 99) * 2.0
+
+
+def test_generate_signal_dynamic_profit_target_sets_underlying_target_for_put():
+    bars = [
+        bar(0, 100, 101, 99, 100.5),
+        bar(5, 100.5, 102, 100, 100.8),
+        bar(10, 100.8, 101.5, 98.5, 99.0),
+        bar(15, 99.0, 99.0, 95.0, 96.0),  # breaks below ORB low (98.5); range = 99-95 = 4.0
+    ]
+    signal = generate_signal(
+        bars, MARKET_OPEN, orb_minutes=15, use_vwap_filter=False, use_volume_filter=False,
+        use_ema_cloud_filter=False, use_dynamic_profit_target=True, dynamic_pt_multiplier=2.0,
+    )
+    assert signal is not None
+    assert signal.underlying_target_price == 96.0 - (99 - 95) * 2.0
+
+
+def test_generate_signal_dynamic_profit_target_off_by_default():
+    bars = [
+        bar(0, 100, 101, 99, 100.5),
+        bar(5, 100.5, 102, 100, 100.8),
+        bar(10, 100.8, 101.5, 98.5, 99.0),
+        bar(15, 99.0, 103, 99.0, 102.5),
+    ]
+    signal = generate_signal(
+        bars, MARKET_OPEN, orb_minutes=15, use_vwap_filter=False, use_volume_filter=False,
+        use_ema_cloud_filter=False,
+    )
+    assert signal is not None
+    assert signal.underlying_target_price is None
+
+
+def test_generate_signal_ftfc_full_mode_blocks_breakout_against_higher_timeframes():
+    # Reuses _ftfc_bars()'s shape (daily bullish, but the current hour/half-hour
+    # candle is bearish) glued onto a real ORB breakout so generate_signal's
+    # ftfc_mode wiring is exercised end-to-end, not just ftfc_allows() directly.
+    bars = [
+        bar(0, 100, 101, 99, 100.5),
+        bar(5, 100.5, 102, 100, 100.8),
+        bar(10, 100.8, 101.5, 98.5, 99.0),
+        bar(15, 99.0, 110, 99.0, 105),  # breaks above ORB high (102); this IS the daily-open bar though
+    ]
+    # Make the daily/h1/m30 opens diverge from the breakout bar itself by
+    # adding two more bars: one that starts a new hour (h1/m30 open), one
+    # that closes back down (bearish current-hour candle) but still above orb_high.
+    bars += [
+        bar(30, 106, 108, 105, 107),   # 10:00 -> new hour/half-hour bucket, open=106
+        bar(35, 107, 107.2, 102.5, 103),  # 10:05 -> close 103, still > orb_high(102) but < 106
+    ]
+    blocked = generate_signal(
+        bars, MARKET_OPEN, orb_minutes=15, use_vwap_filter=False, use_volume_filter=False,
+        use_ema_cloud_filter=False, ftfc_mode="full",
+    )
+    assert blocked is None
+
+    allowed = generate_signal(
+        bars, MARKET_OPEN, orb_minutes=15, use_vwap_filter=False, use_volume_filter=False,
+        use_ema_cloud_filter=False, ftfc_mode="off",
+    )
+    assert allowed is not None
+    assert allowed.option_type == OptionType.CALL

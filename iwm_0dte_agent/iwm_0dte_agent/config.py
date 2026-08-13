@@ -87,6 +87,66 @@ class Config:
     ema_cloud_filter: bool = field(
         default_factory=lambda: os.environ.get("EMA_CLOUD_FILTER", "true").lower() == "true"
     )
+    # FTFC (Full Timeframe Continuity): "off" (default) imposes no
+    # restriction; "daily" requires the current daily candle to also point
+    # the breakout's direction; "full" additionally requires the current
+    # 60m/30m candles to agree too. Off by default -- not yet backtest-
+    # validated, unlike ema_cloud_filter which the user explicitly defined
+    # the "A+ setup" around. See strategy.ftfc_allows().
+    ftfc_mode: str = field(default_factory=lambda: os.environ.get("FTFC_MODE", "off").lower())
+
+    # Dynamic profit target: when on, ORB entries ALSO get an underlying-
+    # price-based target (dynamic_pt_multiplier x the breakout candle's
+    # high-low range from entry), checked in addition to the usual
+    # PROFIT_TARGET_PCT premium-based one -- see strategy.generate_signal()
+    # and agent.py's _check_exit. Off by default, matching the volume/
+    # breakout-buffer precedent: implemented and available to compare via
+    # backtest, not assumed to help until validated.
+    dynamic_profit_target: bool = field(
+        default_factory=lambda: os.environ.get("DYNAMIC_PROFIT_TARGET", "false").lower() == "true"
+    )
+    dynamic_pt_multiplier: float = field(default_factory=lambda: _env_float("DYNAMIC_PT_MULTIPLIER", 2.0))
+
+    # Retest entries: a second, independent entry mechanism alongside the
+    # ORB+EMA-cloud breakout above -- waits for a confirmed breakout, then a
+    # later candle that wicks back to retest the broken level and closes
+    # back outside it, with a confirming candlestick pattern (Hammer/
+    # Bullish Engulfing or Shooting Star/Bearish Engulfing). See
+    # strategy.retest_signal(). Off by default -- this is a whole new kind
+    # of trade the agent can place, not just a filter on the existing one.
+    enable_retest_entries: bool = field(
+        default_factory=lambda: os.environ.get("ENABLE_RETEST_ENTRIES", "false").lower() == "true"
+    )
+    retest_continuation: bool = field(
+        default_factory=lambda: os.environ.get("RETEST_CONTINUATION", "true").lower() == "true"
+    )
+    retest_reversal: bool = field(
+        default_factory=lambda: os.environ.get("RETEST_REVERSAL", "true").lower() == "true"
+    )
+    # Risk:reward ratio for the retest trade's own underlying-price-based
+    # target (target = rr_ratio x stop distance from entry) -- independent
+    # of STOP_LOSS_PCT/PROFIT_TARGET_PCT, which still apply too as a
+    # premium-decay backstop.
+    retest_rr_ratio: float = field(default_factory=lambda: _env_float("RETEST_RR_RATIO", 2.0))
+    # Pushes the underlying-price stop beyond the retest candle's raw
+    # wick by this many ATR(14)s, so ordinary noise doesn't tag it
+    # immediately. 0 (default) = stop sits exactly on the wick.
+    retest_sl_atr_mult: float = field(default_factory=lambda: _env_float("RETEST_SL_ATR_MULT", 0.0))
+    # A true Hammer/Shooting Star requires a prior local downtrend/uptrend
+    # (else it's a Hanging Man/Inverted Hammer -- a weak, contested shape).
+    retest_require_trend_context: bool = field(
+        default_factory=lambda: os.environ.get("RETEST_REQUIRE_TREND_CONTEXT", "true").lower() == "true"
+    )
+    retest_trend_lookback: int = field(default_factory=lambda: _env_int("RETEST_TREND_LOOKBACK", 5))
+    # Both off by default, matching the indicator's own defaults -- retest
+    # entries are evaluated independently of the main EMA_CLOUD_FILTER/
+    # FTFC_MODE settings above unless explicitly opted into here too.
+    retest_cloud_filter: bool = field(
+        default_factory=lambda: os.environ.get("RETEST_CLOUD_FILTER", "false").lower() == "true"
+    )
+    retest_ftfc_filter: bool = field(
+        default_factory=lambda: os.environ.get("RETEST_FTFC_FILTER", "false").lower() == "true"
+    )
 
     # Gameplan (hold/rejection zone) strategy
     gameplan_require_bull_close: bool = field(

@@ -99,11 +99,10 @@ and can read noisier than it would on a full multi-day chart. It's not
 gated off during this window — a well-defined but less settled reading is
 used rather than blocking entries outright.
 
-**Two additional confirming filters exist, both off by default**
-(`VOLUME_FILTER=false`, `BREAKOUT_BUFFER_PCT=0`) — a real backtest
-comparison didn't show a clear benefit over the base ORB+VWAP strategy, so
-the agent behaves the same as it did before these existed unless you
-explicitly turn one on to experiment:
+**Three additional confirming filters exist, all off by default**
+(`VOLUME_FILTER=false`, `BREAKOUT_BUFFER_PCT=0`, `FTFC_MODE=off`) — none of
+these are backtest-validated yet, so the agent behaves the same as it did
+before they existed unless you explicitly turn one on to experiment:
 - **Volume** (`VOLUME_FILTER`): the breakout bar's volume must beat
   `VOLUME_MULTIPLIER` (default 1.5) times the average volume of the last
   `VOLUME_LOOKBACK_BARS` (default 6) bars, counting only bars *after* the
@@ -113,6 +112,13 @@ explicitly turn one on to experiment:
 - **Breakout buffer** (`BREAKOUT_BUFFER_PCT`, e.g. 0.001 = 0.1%): the
   close must clear the level by this fraction, not just tick through it
   by any amount.
+- **FTFC** (Full Timeframe Continuity, `FTFC_MODE`): requires the current
+  (still-forming) daily candle — and, in `full` mode, the current 60-minute
+  and 30-minute candles too — to also be closing above their own open for a
+  CALL (below, for a PUT). `daily` checks only the daily candle; `off`
+  (default) imposes no restriction. Computed purely from bars accumulated
+  so far today, so no multi-day history is needed. See
+  `strategy.ftfc_allows()`.
 
 All of these apply in paper, `--live`, and `backtest.py` identically since
 all three reuse this exact function — `python -m iwm_0dte_agent.backtest` is
@@ -146,6 +152,68 @@ it (default `1.0`, e.g. SPY breaking out at $775 proposes the $776 call) —
 then whichever real strike in the chain is closest to that target is used,
 so this still works cleanly against chains that don't have exact $1
 increments. See `select_strike_by_dollar_offset()` in `strategy.py`.
+
+### Dynamic profit target and retest entries
+
+Two more pieces ported from the same "ORB Master" Pine script as the EMA
+clouds/FTFC above, **both off by default** — implemented and available to
+compare via `backtest.py`, not assumed to help until validated:
+
+**Dynamic profit target** (`DYNAMIC_PROFIT_TARGET=true`): ORB entries get a
+second, underlying-price-based profit target — `DYNAMIC_PT_MULTIPLIER`
+(default `2.0`) times the breakout candle's own high-low range, projected
+from entry in the breakout direction (matching the Pine script's Profit
+Target Box, which is itself checked against the underlying's price, not
+the option's). This is checked **in addition to** the usual
+`PROFIT_TARGET_PCT` premium-based target, never instead of it — whichever
+condition trips first closes the position. `DYNAMIC_PROFIT_TARGET=false`
+(default) leaves this unset, unchanged from before it existed.
+
+**Retest entries** (`ENABLE_RETEST_ENTRIES=true`): a second, independent
+entry mechanism layered on the same ORB levels — a whole new kind of trade
+the agent can place, not just a filter on the existing signal. Only
+evaluated when the primary ORB+EMA-cloud signal doesn't fire that cycle.
+Waits for a confirmed breakout at some point in the session, then a
+*later* candle that wicks back to retest the broken level but closes back
+outside it, combined with a candlestick pattern:
+- **Continuation** (`RETEST_CONTINUATION`, default on): the pattern agrees
+  with the original breakout direction (the level held, trend resumes) —
+  Hammer or Bullish Engulfing for a CALL, Shooting Star or Bearish
+  Engulfing for a PUT.
+- **Reversal** (`RETEST_REVERSAL`, default on): the pattern disagrees with
+  the original breakout (it looks exhausted) — the same patterns, but
+  betting on a fade back through the range instead.
+- A true Hammer requires a prior local downtrend (else it's a Hanging
+  Man — a weak, contested shape, not a reliable bull signal); a true
+  Shooting Star requires a prior local uptrend (else it's an Inverted
+  Hammer). Gated by `RETEST_REQUIRE_TREND_CONTEXT` (default on) and
+  `RETEST_TREND_LOOKBACK` (default 5 bars).
+
+Entry is the retest candle's close; stop is that candle's low/high
+(pushed further out by `RETEST_SL_ATR_MULT` × ATR(14) if set, default 0 =
+stop sits exactly on the wick); target is `RETEST_RR_RATIO` (default
+`2.0`) × that stop distance. This is a **self-contained,
+underlying-price-based R:R system**, independent of
+`STOP_LOSS_PCT`/`PROFIT_TARGET_PCT` — but those still apply too, as a
+premium-decay backstop, so a position doesn't sit through catastrophic
+0DTE theta decay just because the underlying hasn't reached its stop yet.
+Whichever of the four conditions (underlying stop, underlying target,
+premium stop, premium target) trips first closes the position.
+
+`RETEST_CLOUD_FILTER` and `RETEST_FTFC_FILTER` (both default off, matching
+the indicator's own defaults) optionally require retest entries to also
+respect `EMA_CLOUD_FILTER`/`FTFC_MODE` — independent of whether those are
+enabled for the primary ORB signal.
+
+**Not ported**: the Pine script's "Block Reversals Against A Same-Day
+Confirmed Breakout" toggle depends on a "confirmed breakout already fired
+today" once-per-day latch that this agent doesn't track — `generate_signal()`
+re-evaluates fresh every poll cycle rather than firing once per day (see
+the backtest results discussion around `MAX_TRADES_PER_DAY` re-entries), so
+that specific toggle wasn't a clean fit and was left out.
+
+See `retest_signal()`, `atr()`, `ftfc_allows()`, and `_candle_patterns()`
+in `strategy.py` for the exact logic.
 
 ### Gameplan: Hold / Rejection Zones (`STRATEGY=gameplan`)
 
