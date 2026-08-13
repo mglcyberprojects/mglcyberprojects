@@ -1,10 +1,12 @@
 # IWM 0DTE Options Signal Agent
 
-A signal-generation agent for **$IWM (Russell 2000 ETF) same-day-expiration
-("0DTE") options**, connected to Robinhood. It watches price action, applies
-an opening-range-breakout strategy, and proposes trades — but it **never
-places an order without an explicit human confirmation**, either typed at
-the terminal or approved/declined from Telegram. There is no autopilot mode.
+A signal-generation agent for **same-day-expiration ("0DTE") options**
+across a configurable set of tickers (default: `SPY, IWM, NVDA, MSTR, HOOD,
+COIN, PLTR, UBER`), connected to Robinhood. It watches price action, applies
+a 5-minute opening-range-breakout strategy confirmed by Ripster EMA cloud
+confluence, and proposes trades — but it **never places an order without an
+explicit human confirmation**, either typed at the terminal or
+approved/declined from Telegram. There is no autopilot mode.
 
 **Going live for the first time?** See `live_trading_walkthrough.txt` for
 the exact setup checklist and process flow -- what to verify before your
@@ -30,9 +32,10 @@ first `--live` session, and what to expect during one.
   against one real account's schema so far; see "Robinhood's official MCP
   server" below before trusting it with real money.
 - **Default mode is paper trading.** Running the agent with no flags never
-  touches Robinhood or real money — it simulates fills against real IWM
-  price data pulled via `yfinance`, with a synthetic (Black-Scholes) option
-  chain. Use this to evaluate the strategy before ever considering `--live`.
+  touches Robinhood or real money — it simulates fills against real price
+  data pulled via `yfinance` for each tracked symbol, with a synthetic
+  (Black-Scholes) option chain. Use this to evaluate the strategy before
+  ever considering `--live`.
 - Every proposed trade — entry or exit — shows its contract, cost, stop
   loss, and profit target, and requires an explicit approval before
   `broker.submit_order` is ever called. Entries let you pick the quantity
@@ -44,6 +47,11 @@ first `--live` session, and what to expect during one.
   before the session begins -- typed at the terminal without Telegram
   configured, or replied to a Telegram message when it is (see "Running
   unattended on Windows" below).
+- **The agent can hold one position per tracked symbol at a time, up to all
+  of `SYMBOLS` concurrently** — e.g. a $SPY call and an $IWM put open at the
+  same time is expected, not a bug. `MAX_TRADES_PER_DAY` and
+  `MAX_DAILY_LOSS_PCT` apply **globally across every symbol combined**, not
+  per ticker — see "Risk management" below.
 - **Telegram approval means whoever controls that Telegram account can
   place real orders in --live mode.** Treat the bot token and your chat id
   as credentials: keep `.env` out of git (already covered by `.gitignore`),
@@ -59,22 +67,37 @@ first `--live` session, and what to expect during one.
 sizing, confirmation gate, and hard-exit handling described below; only the
 "when do I enter" logic differs.
 
-### Opening Range Breakout (`STRATEGY=orb`, default)
+### Opening Range Breakout + Ripster EMA Cloud confluence (`STRATEGY=orb`, default)
 
-With an optional VWAP trend filter, plus two more optional confirming
-filters (off by default — see below):
+An "A+ setup" requires an opening-range breakout **and** EMA cloud
+confluence agreeing on direction, plus an optional VWAP trend filter and two
+more optional confirming filters (off by default — see below):
 
-1. The first `ORB_MINUTES` (default 15) of the session establishes a
-   high/low range.
-2. A close above the range high — and above session VWAP, if
-   `VWAP_FILTER` (default on) is on — signals a **call**. A close below
-   the range low (and below VWAP) signals a **put**.
-3. Only one position is held at a time, capped at `MAX_TRADES_PER_DAY`
-   entries per day.
+1. The first `ORB_MINUTES` (default 5) of the session establishes a
+   high/low range, built from 1-minute bars — breakout entries are also
+   evaluated on 1-minute bars.
+2. A close above the range high — and above session VWAP, if `VWAP_FILTER`
+   (default on) is on — signals a **call**, but only if `EMA_CLOUD_FILTER`
+   (default on) also agrees: both EMA8/EMA9 ("Cloud 1") and EMA34/EMA50
+   ("Cloud 3"), computed on each bar's `(high+low)/2`, must have the short
+   EMA at or above the long EMA (green+blue cloud confluence, matching the
+   attached Ripster EMA Clouds indicator's "strict" mode). A close below the
+   range low (and below VWAP, and with both clouds bearish — red+brown) signals
+   a **put**.
+3. One position may be open per symbol at a time (see "Multi-ticker
+   tracking" below), capped at `MAX_TRADES_PER_DAY` entries **across all
+   symbols combined** per day.
 4. Every position carries a stop loss and profit target expressed as a
    percentage of the premium paid, and is force-exited at `HARD_EXIT` time
    regardless of P&L, to avoid holding 0DTE contracts into the final
    minutes before expiration.
+
+**Early-session caveat:** bars only accumulate from whenever the agent
+started polling that day (no multi-day history), so for roughly the first
+30-50 minutes after open the 34/50-period EMA cloud is still "warming up"
+and can read noisier than it would on a full multi-day chart. It's not
+gated off during this window — a well-defined but less settled reading is
+used rather than blocking entries outright.
 
 **Two additional confirming filters exist, both off by default**
 (`VOLUME_FILTER=false`, `BREAKOUT_BUFFER_PCT=0`) — a real backtest
@@ -91,20 +114,46 @@ explicitly turn one on to experiment:
   close must clear the level by this fraction, not just tick through it
   by any amount.
 
-Both apply in paper, `--live`, and `backtest.py` identically since all
-three reuse this exact function — `python -m iwm_0dte_agent.backtest` is
+All of these apply in paper, `--live`, and `backtest.py` identically since
+all three reuse this exact function — `python -m iwm_0dte_agent.backtest` is
 the way to compare signal frequency and win rate with a filter on vs. off
 before trusting a change with real money.
 
 See `iwm_0dte_agent/strategy.py` for the exact logic — it's pure functions
 with no I/O, so it's easy to read and to unit test.
 
+### Multi-ticker tracking
+
+`SYMBOLS` (default `SPY,IWM,NVDA,MSTR,HOOD,COIN,PLTR,UBER`) is a
+comma-separated list of every ticker the agent watches each cycle. Each
+symbol gets its own independently-computed opening range, EMA clouds, and
+signal — a breakout on one ticker has no effect on any other. Up to one
+position per symbol may be open at once (up to 8 concurrently with the
+default list), but `MAX_TRADES_PER_DAY` and `MAX_DAILY_LOSS_PCT` are
+enforced **globally**, shared across every symbol, not reset per ticker.
+
+`STRATEGY=gameplan` is the one exception: it only ever trades
+`SYMBOLS`' first entry. Its manually-input hold/rejection zones and single
+mutable zone-state don't generalize to multiple simultaneous tickers, so
+multi-symbol tracking is scoped to the ORB strategy only.
+
+### Strike selection
+
+Both entry paths (ORB and gameplan) pick a contract this way: a **CALL**
+targets a strike `STRIKE_DOLLAR_OFFSET` dollars *above* the current
+underlying price, a **PUT** targets `STRIKE_DOLLAR_OFFSET` dollars *below*
+it (default `1.0`, e.g. SPY breaking out at $775 proposes the $776 call) —
+then whichever real strike in the chain is closest to that target is used,
+so this still works cleanly against chains that don't have exact $1
+increments. See `select_strike_by_dollar_offset()` in `strategy.py`.
+
 ### Gameplan: Hold / Rejection Zones (`STRATEGY=gameplan`)
 
 A port of the "Gameplan: Hold / Rejection Zones" TradingView indicator
 (`iwm_0dte_agent/gameplan_strategy.py`), for a discretionary "I drew these
 levels on the chart this morning" style of trading rather than a computed
-opening range:
+opening range. **Only trades the first symbol in `SYMBOLS`** — see
+"Multi-ticker tracking" above:
 
 1. You define a **hold zone** (support) and a **rejection zone**
    (resistance) as price ranges, e.g. hold `228.50–229.20`, reject
@@ -160,37 +209,11 @@ your buying power, the signal is skipped with an alert instead of prompting.
 `RISK_PCT_PER_TRADE` plays no part in this — it's not a live/paper knob.
 
 `backtest.py`, which has no human in the loop, still needs a fully automated
-sizing formula — that's what `RISK_PCT_PER_TRADE` (and `CHEAP_OTM_MODE`
-below) drive: they pick a single quantity per simulated trade so a multi-day
-backtest can run unattended.
-
-### Small-account smoke testing (e.g. $50) — backtest only
-
-A single ATM 0DTE IWM contract can easily cost more than a small test
-account's entire buying power, and the `RISK_PCT_PER_TRADE` sizing formula
-above will just size every trade down to 0 contracts once buying power gets
-that small. `CHEAP_OTM_MODE=true` swaps both of those out for account sizes
-where there's no meaningful "risk %" to size against, in `backtest.py`:
-
-| Setting | Meaning |
-|---|---|
-| `CHEAP_OTM_MODE` | When true, replaces normal strike/sizing logic below, in `backtest.py` |
-| `OTM_MIN_DISCOUNT_PCT` | Walks strikes out-of-the-money until premium is at least this much cheaper than the ATM contract's ask (default `0.70` = 70% cheaper) |
-
-With it on: the agent picks the first strike, walking away from ATM, whose
-ask is at least `OTM_MIN_DISCOUNT_PCT` below the ATM ask (rather than a
-fixed number of strikes out, since how far that takes you moves with the
-day's volatility) — then buys exactly 1 contract if `ask * 100` fits your
-buying power, otherwise skips the signal. Stop loss / profit target %,
-approval-gating, and everything else about the agent is unchanged; this
-only changes *which* strike gets picked and *how many* contracts.
-
-`CHEAP_OTM_MODE` still affects strike selection in live/paper mode too — it's
-only the sizing half (1 contract only) that's backtest-only, since live/paper
-always offers the 1/3/5 choice described above regardless of this flag. Turn
-it off (`CHEAP_OTM_MODE=false`, the default) once you're backtesting against
-a real account and want `RISK_PCT_PER_TRADE`-based position sizing back for
-those simulated runs.
+sizing formula — that's what `RISK_PCT_PER_TRADE` drives: it picks a single
+quantity per simulated trade (via `RiskManager.position_size()`) so a
+multi-day backtest can run unattended. Strike selection in `backtest.py`
+uses the same `STRIKE_DOLLAR_OFFSET` mechanism described above, so its
+picks match live/paper.
 
 ## Setup
 
@@ -216,9 +239,10 @@ an August 2026 connection, this covers account balance, underlying quotes,
 → `place_option_order` for submitting a trade (declining automatically if
 Robinhood's own pre-trade `order_checks` flags anything). There's no MCP
 tool for historical price bars, only a live quote — so rather than falling
-back to `robin_stocks` for those, `get_intraday_bars` builds its own 5-minute
-OHLC bars in process from the same quote polls the agent already makes every
-cycle (see `bar_builder.py`). With `USE_ROBINHOOD_MCP=true`, the default,
+back to `robin_stocks` for those, `get_intraday_bars` builds its own
+1-minute OHLC bars in process (one `BarBuilder` per tracked symbol) from
+the same quote polls the agent already makes every cycle (see
+`bar_builder.py`). With `USE_ROBINHOOD_MCP=true`, the default,
 `robin_stocks` is never imported, never logged into, and never called —
 `ROBINHOOD_USERNAME`/`PASSWORD`/`TOTP_SECRET` aren't needed. The one
 consequence: the opening range is only as good as how long the agent has
@@ -365,55 +389,48 @@ python -m iwm_0dte_agent --list-mcp-tools
 All proposed and executed trades are appended to `trade_log.csv`
 (configurable via `TRADE_LOG_PATH`), including two diagnostic events for
 signals that fired but never became a trade -- useful for tuning
-`OTM_MIN_DISCOUNT_PCT` from real numbers instead of guessing:
+`STRIKE_DOLLAR_OFFSET` from real numbers instead of guessing:
 
 | `event` | Meaning | Key `detail` fields |
 |---|---|---|
-| `skipped_no_contract` | `select_cheap_otm_strike`/`select_strike` found nothing (`price` is the ATM ask, for reference) | `atm_ask`, `otm_min_discount_pct`, `threshold` |
+| `skipped_no_contract` | `select_strike_by_dollar_offset` found nothing for this option type in the chain (`price` is the ATM ask, for reference) | `atm_ask`, `strike_dollar_offset` |
 | `skipped_no_quantity` | A contract was found (`strike`/`price`) but none of 1/3/5 contracts fit buying power | `buying_power`, `cost_per_contract` |
 
 Neither event sends a Telegram alert (see above) -- this CSV is the only
 place to see them. If a signal keeps re-firing without trading, grep these
-two events out of `trade_log.csv` to see exactly what ATM ask / threshold /
+two events out of `trade_log.csv` to see exactly what ATM ask / offset /
 cost it was missing by.
 
 ## Backtesting
 
+`backtest.py` replays one ticker at a time (`--symbol`, defaults to the
+first entry in `SYMBOLS`) -- it does not simulate all tracked tickers in a
+single run:
+
 ```bash
-python -m iwm_0dte_agent.backtest --days 7
+python -m iwm_0dte_agent.backtest --symbol IWM --days 7
 ```
 
-Replays the same strategy/risk logic against recent real IWM price history
-and prints a per-day trade report plus a `backtest_results.csv`. Option
-prices are still the same synthetic Black-Scholes model paper trading uses
-(no free source of historical 0DTE chains exists), so treat this as a check
-on strategy *behavior*, not a prediction of real P&L. See
+Replays the same strategy/risk logic against recent real price history for
+that symbol and prints a per-day trade report plus a `backtest_results.csv`.
+Option prices are still the same synthetic Black-Scholes model paper
+trading uses (no free source of historical 0DTE chains exists), so treat
+this as a check on strategy *behavior*, not a prediction of real P&L. See
 `backtest_instructions.txt` for the full walkthrough.
 
 To backtest the gameplan strategy, pass a single fixed zone set applied
 across every day in the window (backtesting can't ask you for a fresh
 discretionary read each morning the way live/paper trading does):
 ```bash
-python -m iwm_0dte_agent.backtest --strategy gameplan --days 7 \
+python -m iwm_0dte_agent.backtest --strategy gameplan --symbol IWM --days 7 \
     --hold-low 228.50 --hold-high 229.20 --reject-low 231.00 --reject-high 232.50
 ```
 
-The simulated account starts with $25,000 buying power by default,
-regardless of `CHEAP_OTM_MODE` in `.env` — that setting's strike selection
-and 1-contract-if-affordable sizing *are* honored in the backtest, but at
-$25,000 a contract is basically always affordable, so the "does this fit my
-account" part of `CHEAP_OTM_MODE` never actually gets exercised. Pass
+The simulated account starts with $25,000 buying power by default. Pass
 `--buying-power` to test against a size that matches your real account:
 ```bash
-python -m iwm_0dte_agent.backtest --days 7 --buying-power 50
+python -m iwm_0dte_agent.backtest --symbol IWM --days 7 --buying-power 50
 ```
-Worth noting when comparing runs: at small buying-power sizes, cheap
-far-OTM premiums swing wildly in percentage terms on tiny absolute dollar
-amounts, which can swamp the read on whether some other change (a filter, a
-parameter tweak) actually helped. If you're isolating a strategy/signal
-change specifically, compare at the $25,000 default first; use
-`--buying-power` to separately judge how `CHEAP_OTM_MODE` sizing behaves at
-your real account size.
 
 ## Running unattended on Windows
 
@@ -518,14 +535,14 @@ iwm_0dte_agent/
   market_data.py        # yfinance download + DataFrame-to-Bar conversion, shared by paper broker + backtester
   paper_broker.py       # simulated broker for --dry-run (default)
   pricing.py            # Black-Scholes pricer + synthetic chain/quote builders (paper broker + backtester)
-  strategy.py           # ORB + VWAP signal generation (pure functions)
-  gameplan_strategy.py  # hold/rejection zone signal generation, ported from a TradingView indicator
-  risk.py               # position sizing and daily risk limits
+  strategy.py           # ORB + VWAP + EMA cloud signal generation, dollar-offset strike selection (pure functions)
+  gameplan_strategy.py  # hold/rejection zone signal generation, ported from a TradingView indicator (symbols[0] only)
+  risk.py               # position sizing and daily risk limits (global across all tracked symbols)
   notifier.py           # Notifier protocol + factory (Telegram if configured, else terminal)
   telegram_bot.py       # Telegram alerts + inline-button approve/decline
   terminal_notifier.py  # terminal fallback: print alerts, y/N confirmation prompt
   trade_log.py          # CSV audit log of every proposed/filled/declined trade
-  backtest.py           # replays strategy/risk logic against historical IWM bars
+  backtest.py           # replays strategy/risk logic against historical bars, one symbol per run
   agent.py              # main loop + CLI entrypoint
 tests/                  # unit tests for strategy/risk/pricing/notifier/mcp_broker/backtest
 deploy/

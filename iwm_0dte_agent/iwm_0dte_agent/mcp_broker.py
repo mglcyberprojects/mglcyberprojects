@@ -330,7 +330,10 @@ class MCPBroker(Broker):
         self._mcp_session: _MCPSession | None = None
         self._account_number: str | None = None
         self._instrument_cache: dict[str, dict] = {}
-        self._bar_builder = BarBuilder()
+        # One BarBuilder per symbol -- tracking multiple tickers means each
+        # needs its own independent accumulated bar series; a single shared
+        # instance would mix different symbols' quotes into one series.
+        self._bar_builders: dict[str, BarBuilder] = {}
 
     def list_discovered_tools(self) -> set[str]:
         return set(self._mcp_session.tool_names) if self._mcp_session else set()
@@ -438,8 +441,11 @@ class MCPBroker(Broker):
 
     def get_intraday_bars(self, symbol: str, since: dt.datetime) -> list[Bar]:
         price = self.get_underlying_price(symbol)
-        self._bar_builder.add_quote(price, dt.datetime.now())
-        return self._bar_builder.bars_since(since)
+        # 1-minute buckets to match the strategy's 1-minute entry granularity
+        # (see paper_broker.py's matching yfinance interval).
+        builder = self._bar_builders.setdefault(symbol, BarBuilder(bucket_minutes=1))
+        builder.add_quote(price, dt.datetime.now())
+        return builder.bars_since(since)
 
     # --- Broker interface: options, MCP-backed ---
 

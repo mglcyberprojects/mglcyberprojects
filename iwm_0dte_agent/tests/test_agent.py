@@ -54,7 +54,7 @@ def test_build_agent_status_with_open_position_computes_unrealized_pnl():
     risk.realized_pnl_today = 50.0
     position = _make_position(entry_price=2.00)
 
-    status = _build_agent_status(position, broker, risk, Config(max_trades_per_day=2))
+    status = _build_agent_status({"IWM": position}, broker, risk, Config(max_trades_per_day=2))
 
     assert len(status.positions) == 1
     assert status.positions[0].current_bid == 3.00
@@ -70,7 +70,7 @@ def test_build_agent_status_with_no_position():
     broker = FakeBroker(quote_bid=3.00, buying_power=50.0)
     risk = RiskManager(config=Config())
 
-    status = _build_agent_status(None, broker, risk, Config())
+    status = _build_agent_status({}, broker, risk, Config())
 
     assert status.positions == []
     assert broker.get_option_quote_calls == 0  # no position -> no quote fetch needed
@@ -81,7 +81,7 @@ def test_handle_status_requests_does_nothing_when_no_pending():
     risk = RiskManager(config=Config())
     notifier = FakeStatusNotifier(pending=[])
 
-    _handle_status_requests(notifier, broker, risk, None, Config())
+    _handle_status_requests(notifier, broker, risk, {}, Config())
 
     assert notifier.posted == []
     assert notifier.updated == []
@@ -93,7 +93,7 @@ def test_handle_status_requests_dispatches_new_to_post_status():
     risk = RiskManager(config=Config())
     notifier = FakeStatusNotifier(pending=[StatusRequest(kind="new")])
 
-    _handle_status_requests(notifier, broker, risk, None, Config())
+    _handle_status_requests(notifier, broker, risk, {}, Config())
 
     assert len(notifier.posted) == 1
     assert notifier.updated == []
@@ -104,7 +104,7 @@ def test_handle_status_requests_dispatches_refresh_to_update_status_with_message
     risk = RiskManager(config=Config())
     notifier = FakeStatusNotifier(pending=[StatusRequest(kind="refresh", message_id=555)])
 
-    _handle_status_requests(notifier, broker, risk, None, Config())
+    _handle_status_requests(notifier, broker, risk, {}, Config())
 
     assert notifier.posted == []
     assert len(notifier.updated) == 1
@@ -116,7 +116,7 @@ def test_handle_status_requests_reuses_one_snapshot_for_multiple_pending():
     risk = RiskManager(config=Config())
     notifier = FakeStatusNotifier(pending=[StatusRequest(kind="new"), StatusRequest(kind="refresh", message_id=1)])
 
-    _handle_status_requests(notifier, broker, risk, None, Config())
+    _handle_status_requests(notifier, broker, risk, {}, Config())
 
     assert broker.get_buying_power_calls == 1  # one snapshot built, reused for both requests
     assert len(notifier.posted) == 1
@@ -197,7 +197,7 @@ class FakeAlertNotifier:
 
 def _entry_config(**overrides) -> Config:
     defaults = dict(
-        vwap_filter=False, cheap_otm_mode=True, entry_cutoff=dt.time.max,
+        vwap_filter=False, entry_cutoff=dt.time.max,
         hard_exit=dt.time.max, max_trades_per_day=2, max_daily_loss_pct=0.5,
     )
     defaults.update(overrides)
@@ -205,37 +205,40 @@ def _entry_config(**overrides) -> Config:
 
 
 def test_try_open_position_logs_diagnostics_when_no_usable_contract():
-    # Discount target so strict (99%) nothing in the chain clears it --
-    # the same failure mode as a chain that just doesn't extend far enough OTM.
-    config = _entry_config(otm_min_discount_pct=0.99)
-    broker = FakeEntryBroker(buying_power=50.0, chain=_otm_put_chain())
+    # Chain has no PUT contracts at all (e.g. a thin real-world chain) --
+    # select_strike_by_dollar_offset() has nothing to pick from regardless
+    # of strike_dollar_offset, the same failure mode as a chain that just
+    # doesn't extend far enough OTM under the old mechanism.
+    config = _entry_config(strike_dollar_offset=1.0)
+    broker = FakeEntryBroker(buying_power=50.0, chain=[])
     trade_log = FakeTradeLog()
     notifier = FakeAlertNotifier()
     risk = RiskManager(config=config)
 
-    result = _try_open_position(broker, risk, trade_log, config, live=False, notifier=notifier, alerted_reasons=set())
+    result = _try_open_position("IWM", broker, risk, trade_log, config, live=False, notifier=notifier, alerted_reasons=set())
 
     assert result is None
     logged = [e for e in trade_log.entries if e["event"] == "skipped_no_contract"]
     assert len(logged) == 1
     assert logged[0]["option_type"] == "put"
-    assert "atm_ask=3.0" in logged[0]["detail"]
-    assert "threshold=0.03" in logged[0]["detail"]
-    # Logged, but no Telegram/terminal alert -- a signal missing the
-    # discount target isn't worth pinging about every time it happens.
+    assert "atm_ask=None" in logged[0]["detail"]
+    assert "strike_dollar_offset=1.0" in logged[0]["detail"]
+    # Logged, but no Telegram/terminal alert -- a signal missing a usable
+    # contract isn't worth pinging about every time it happens.
     assert notifier.alerts == []
 
 
 def test_try_open_position_logs_diagnostics_when_no_affordable_quantity():
-    # Default-ish 70% discount finds strike 197 (ask 0.85, $85/contract) --
-    # affordable on a normal account, but not on $50 buying power.
-    config = _entry_config(otm_min_discount_pct=0.70)
+    # Breakdown close is 199.8; strike_dollar_offset=2.8 targets 197.0
+    # exactly -> strike 197 (ask 0.85, $85/contract) -- affordable on a
+    # normal account, but not on $50 buying power.
+    config = _entry_config(strike_dollar_offset=2.8)
     broker = FakeEntryBroker(buying_power=50.0, chain=_otm_put_chain())
     trade_log = FakeTradeLog()
     notifier = FakeAlertNotifier()
     risk = RiskManager(config=config)
 
-    result = _try_open_position(broker, risk, trade_log, config, live=False, notifier=notifier, alerted_reasons=set())
+    result = _try_open_position("IWM", broker, risk, trade_log, config, live=False, notifier=notifier, alerted_reasons=set())
 
     assert result is None
     logged = [e for e in trade_log.entries if e["event"] == "skipped_no_quantity"]

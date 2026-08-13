@@ -3,10 +3,10 @@ import datetime as dt
 from iwm_0dte_agent.models import Bar, OptionContract, OptionType
 from iwm_0dte_agent.strategy import (
     atm_contract,
+    ema_cloud_bias,
     generate_signal,
     opening_range,
-    select_cheap_otm_strike,
-    select_strike,
+    select_strike_by_dollar_offset,
     vwap,
 )
 
@@ -43,7 +43,9 @@ def test_generate_signal_call_breakout_no_vwap_filter():
         bar(10, 100.8, 101.5, 98.5, 99.0),
         bar(15, 99.0, 103, 99.0, 102.5),  # breaks above ORB high (102)
     ]
-    signal = generate_signal(bars, MARKET_OPEN, orb_minutes=15, use_vwap_filter=False, use_volume_filter=False)
+    signal = generate_signal(
+        bars, MARKET_OPEN, orb_minutes=15, use_vwap_filter=False, use_volume_filter=False, use_ema_cloud_filter=False,
+    )
     assert signal is not None
     assert signal.option_type == OptionType.CALL
 
@@ -55,7 +57,9 @@ def test_generate_signal_put_breakdown():
         bar(10, 100.8, 101.5, 98.5, 99.0),
         bar(15, 99.0, 99.0, 97.0, 97.5),  # breaks below ORB low (98.5)
     ]
-    signal = generate_signal(bars, MARKET_OPEN, orb_minutes=15, use_vwap_filter=False, use_volume_filter=False)
+    signal = generate_signal(
+        bars, MARKET_OPEN, orb_minutes=15, use_vwap_filter=False, use_volume_filter=False, use_ema_cloud_filter=False,
+    )
     assert signal is not None
     assert signal.option_type == OptionType.PUT
 
@@ -67,7 +71,7 @@ def test_generate_signal_none_inside_range():
         bar(10, 100.8, 101.5, 98.5, 99.0),
         bar(15, 99.0, 101.0, 99.0, 100.0),  # stays inside [98.5, 102]
     ]
-    assert generate_signal(bars, MARKET_OPEN, orb_minutes=15, use_vwap_filter=False) is None
+    assert generate_signal(bars, MARKET_OPEN, orb_minutes=15, use_vwap_filter=False, use_ema_cloud_filter=False) is None
 
 
 def test_generate_signal_vwap_filter_blocks_weak_breakout():
@@ -80,9 +84,11 @@ def test_generate_signal_vwap_filter_blocks_weak_breakout():
     ]
     signal_with_filter = generate_signal(
         bars, MARKET_OPEN, orb_minutes=15, use_vwap_filter=True, use_volume_filter=False, breakout_buffer_pct=0.0,
+        use_ema_cloud_filter=False,
     )
     signal_without_filter = generate_signal(
         bars, MARKET_OPEN, orb_minutes=15, use_vwap_filter=False, use_volume_filter=False, breakout_buffer_pct=0.0,
+        use_ema_cloud_filter=False,
     )
     assert signal_without_filter is not None
     # VWAP across all bars sits within the breakout range here, so the filtered
@@ -101,11 +107,13 @@ def test_generate_signal_volume_filter_blocks_thin_breakout():
     blocked = generate_signal(
         bars, MARKET_OPEN, orb_minutes=15, use_vwap_filter=False, use_volume_filter=True,
         volume_multiplier=1.5, breakout_buffer_pct=0.0,
+        use_ema_cloud_filter=False,
     )
     assert blocked is None
 
     allowed = generate_signal(
         bars, MARKET_OPEN, orb_minutes=15, use_vwap_filter=False, use_volume_filter=False, breakout_buffer_pct=0.0,
+        use_ema_cloud_filter=False,
     )
     assert allowed is not None
 
@@ -121,6 +129,7 @@ def test_generate_signal_volume_filter_allows_high_volume_breakout():
     signal = generate_signal(
         bars, MARKET_OPEN, orb_minutes=15, use_vwap_filter=False, use_volume_filter=True,
         volume_multiplier=1.5, breakout_buffer_pct=0.0,
+        use_ema_cloud_filter=False,
     )
     assert signal is not None
     assert signal.option_type == OptionType.CALL
@@ -151,6 +160,7 @@ def test_generate_signal_volume_filter_uses_trailing_window_not_full_day_average
     signal = generate_signal(
         bars, MARKET_OPEN, orb_minutes=15, use_vwap_filter=False, use_volume_filter=True,
         volume_multiplier=1.5, volume_lookback_bars=6, breakout_buffer_pct=0.0,
+        use_ema_cloud_filter=False,
     )
     assert signal is not None
     assert signal.option_type == OptionType.CALL
@@ -175,6 +185,7 @@ def test_generate_signal_volume_filter_baseline_excludes_range_forming_bars():
     signal = generate_signal(
         bars, MARKET_OPEN, orb_minutes=15, use_vwap_filter=False, use_volume_filter=True,
         volume_multiplier=1.5, volume_lookback_bars=6, breakout_buffer_pct=0.0,
+        use_ema_cloud_filter=False,
     )
     assert signal is not None
     assert signal.option_type == OptionType.CALL
@@ -189,11 +200,13 @@ def test_generate_signal_breakout_buffer_blocks_marginal_breakout():
     ]
     blocked = generate_signal(
         bars, MARKET_OPEN, orb_minutes=15, use_vwap_filter=False, use_volume_filter=False, breakout_buffer_pct=0.001,
+        use_ema_cloud_filter=False,
     )
     assert blocked is None
 
     allowed = generate_signal(
         bars, MARKET_OPEN, orb_minutes=15, use_vwap_filter=False, use_volume_filter=False, breakout_buffer_pct=0.0,
+        use_ema_cloud_filter=False,
     )
     assert allowed is not None
 
@@ -207,6 +220,7 @@ def test_generate_signal_breakout_buffer_applies_to_put_side_too():
     ]
     blocked = generate_signal(
         bars, MARKET_OPEN, orb_minutes=15, use_vwap_filter=False, use_volume_filter=False, breakout_buffer_pct=0.001,
+        use_ema_cloud_filter=False,
     )
     assert blocked is None
 
@@ -215,27 +229,38 @@ def test_vwap_empty_returns_none():
     assert vwap([]) is None
 
 
-def test_select_strike_atm_and_offset():
+def test_select_strike_by_dollar_offset_call_targets_price_plus_offset():
+    # SPY at $775.00, $1 offset -> target $776, chain has exact $776 strike.
     chain = [
-        OptionContract("IWM", strike, OptionType.CALL, "2024-01-02", 1.0, 1.1, 1.05, f"c{strike}")
-        for strike in (198, 199, 200, 201, 202)
-    ] + [
-        OptionContract("IWM", strike, OptionType.PUT, "2024-01-02", 1.0, 1.1, 1.05, f"p{strike}")
-        for strike in (198, 199, 200, 201, 202)
+        OptionContract("SPY", strike, OptionType.CALL, "2024-01-02", 1.0, 1.1, 1.05, f"c{strike}")
+        for strike in (774, 775, 776, 777, 778)
     ]
-
-    atm_call = select_strike(chain, OptionType.CALL, underlying_price=200.2, strike_offset=0)
-    assert atm_call.strike == 200
-
-    otm_call = select_strike(chain, OptionType.CALL, underlying_price=200.2, strike_offset=1)
-    assert otm_call.strike == 201
-
-    otm_put = select_strike(chain, OptionType.PUT, underlying_price=199.8, strike_offset=1)
-    assert otm_put.strike == 199
+    contract = select_strike_by_dollar_offset(chain, OptionType.CALL, underlying_price=775.00, dollar_offset=1.0)
+    assert contract.strike == 776
 
 
-def test_select_strike_empty_chain_returns_none():
-    assert select_strike([], OptionType.CALL, 200.0, 0) is None
+def test_select_strike_by_dollar_offset_put_targets_price_minus_offset():
+    chain = [
+        OptionContract("SPY", strike, OptionType.PUT, "2024-01-02", 1.0, 1.1, 1.05, f"p{strike}")
+        for strike in (774, 775, 776, 777, 778)
+    ]
+    contract = select_strike_by_dollar_offset(chain, OptionType.PUT, underlying_price=775.00, dollar_offset=1.0)
+    assert contract.strike == 774
+
+
+def test_select_strike_by_dollar_offset_picks_nearest_when_exact_target_missing():
+    # Target $776.00 doesn't exist -- $0.50 increments near the money --
+    # nearest available strike is $775.50.
+    chain = [
+        OptionContract("SPY", strike, OptionType.CALL, "2024-01-02", 1.0, 1.1, 1.05, f"c{strike}")
+        for strike in (774.5, 775.0, 775.5, 777.0, 778.5)
+    ]
+    contract = select_strike_by_dollar_offset(chain, OptionType.CALL, underlying_price=775.00, dollar_offset=1.0)
+    assert contract.strike == 775.5
+
+
+def test_select_strike_by_dollar_offset_empty_chain_returns_none():
+    assert select_strike_by_dollar_offset([], OptionType.CALL, 775.0, 1.0) is None
 
 
 def _otm_call_chain():
@@ -258,33 +283,6 @@ def _otm_put_chain():
     ]
 
 
-def test_select_cheap_otm_strike_walks_out_until_discount_met():
-    # ATM ask 3.00, 70% discount -> threshold 0.90 -> first strike <= that
-    # walking away from ATM is 203 (0.85), not simply "N strikes out".
-    chain = _otm_call_chain()
-    contract = select_cheap_otm_strike(chain, OptionType.CALL, underlying_price=200.2, min_discount_pct=0.70)
-    assert contract.strike == 203
-    assert contract.ask == 0.85
-
-
-def test_select_cheap_otm_strike_puts_walk_downward():
-    chain = _otm_put_chain()
-    contract = select_cheap_otm_strike(chain, OptionType.PUT, underlying_price=199.8, min_discount_pct=0.70)
-    assert contract.strike == 197
-    assert contract.ask == 0.85
-
-
-def test_select_cheap_otm_strike_returns_none_when_chain_too_shallow():
-    # 99% discount off a $3.00 ATM ask needs a $0.03 contract; the chain
-    # never gets that cheap, so there's nothing usable to trade.
-    chain = _otm_call_chain()
-    assert select_cheap_otm_strike(chain, OptionType.CALL, underlying_price=200.2, min_discount_pct=0.99) is None
-
-
-def test_select_cheap_otm_strike_empty_chain_returns_none():
-    assert select_cheap_otm_strike([], OptionType.CALL, 200.0, 0.70) is None
-
-
 def test_atm_contract_returns_nearest_strike():
     chain = _otm_call_chain()
     contract = atm_contract(chain, OptionType.CALL, underlying_price=200.2)
@@ -294,3 +292,74 @@ def test_atm_contract_returns_nearest_strike():
 
 def test_atm_contract_empty_chain_returns_none():
     assert atm_contract([], OptionType.CALL, 200.0) is None
+
+
+def _trend_bars(n: int, start: float, step: float, start_minute: int = 0) -> list[Bar]:
+    """n consecutive 1-minute bars, close changing by `step` each bar,
+    high == low == close (so hl2 == close, keeping the EMA cloud math easy
+    to reason about in tests)."""
+    bars = []
+    price = start
+    for i in range(n):
+        bars.append(bar(start_minute + i, price, price, price, price))
+        price += step
+    return bars
+
+
+def test_ema_cloud_bias_bullish_in_uptrend():
+    assert ema_cloud_bias(_trend_bars(60, start=100.0, step=0.1)) == OptionType.CALL
+
+
+def test_ema_cloud_bias_bearish_in_downtrend():
+    assert ema_cloud_bias(_trend_bars(60, start=150.0, step=-0.1)) == OptionType.PUT
+
+
+def test_ema_cloud_bias_none_when_clouds_disagree():
+    # Long decline (slow 34/50 cloud still bearish) followed by a sharp
+    # recent rally (fast 8/9 cloud already flipped bullish) -- not yet an
+    # "A+" confluence setup.
+    declining = _trend_bars(40, start=150.0, step=-0.5, start_minute=0)
+    rallying = _trend_bars(10, start=declining[-1].close, step=2.0, start_minute=40)
+    assert ema_cloud_bias(declining + rallying) is None
+
+
+def test_ema_cloud_bias_empty_bars_returns_none():
+    assert ema_cloud_bias([]) is None
+
+
+def test_generate_signal_ema_cloud_filter_blocks_breakout_against_the_trend():
+    # A long downtrend (bearish clouds) that ends with one bar spiking back
+    # above the ORB high -- a technical breakout, but against the
+    # established trend/cloud bias, so it shouldn't count as an "A+" setup.
+    bars = _trend_bars(50, start=150.0, step=-0.3)
+    orb_high = max(b.high for b in bars[:15])
+    spike = bar(50, bars[-1].close, orb_high + 5, bars[-1].close, orb_high + 3)
+    bars_with_spike = bars + [spike]
+
+    blocked = generate_signal(
+        bars_with_spike, MARKET_OPEN, orb_minutes=15, use_vwap_filter=False,
+        use_volume_filter=False, breakout_buffer_pct=0.0, use_ema_cloud_filter=True,
+    )
+    assert blocked is None
+
+    allowed = generate_signal(
+        bars_with_spike, MARKET_OPEN, orb_minutes=15, use_vwap_filter=False,
+        use_volume_filter=False, breakout_buffer_pct=0.0, use_ema_cloud_filter=False,
+    )
+    assert allowed is not None
+    assert allowed.option_type == OptionType.CALL
+
+
+def test_generate_signal_ema_cloud_filter_allows_breakout_with_confluence():
+    # Uptrend (bullish clouds) that also breaks the ORB high on the last
+    # bar -- clouds and breakout agree, this is the "A+" case.
+    bars = _trend_bars(50, start=100.0, step=0.3)
+    spike = bar(50, bars[-1].close, bars[-1].close + 5, bars[-1].close, bars[-1].close + 4)
+    bars_with_spike = bars + [spike]
+
+    signal = generate_signal(
+        bars_with_spike, MARKET_OPEN, orb_minutes=15, use_vwap_filter=False,
+        use_volume_filter=False, breakout_buffer_pct=0.0, use_ema_cloud_filter=True,
+    )
+    assert signal is not None
+    assert signal.option_type == OptionType.CALL

@@ -48,6 +48,52 @@ def vwap(bars: list[Bar]) -> float | None:
     return total_pv / total_v
 
 
+def _ema(values: list[float], length: int) -> float | None:
+    """Standard recursive EMA, seeded with the first value. Well-defined
+    for any number of samples >= 1, but converges toward the textbook
+    weighting only after roughly `length` samples -- see ema_cloud_bias()'s
+    docstring for what that means for the 34/50 cloud early in a session."""
+    if not values:
+        return None
+    alpha = 2 / (length + 1)
+    ema = values[0]
+    for v in values[1:]:
+        ema = alpha * v + (1 - alpha) * ema
+    return ema
+
+
+def ema_cloud_bias(bars: list[Bar]) -> OptionType | None:
+    """Ripster EMA Cloud confluence, computed on hl2 ((high+low)/2) per the
+    indicator's own default source (not close): bullish when both the fast
+    cloud (EMA8/EMA9) and slow cloud (EMA34/EMA50) agree bullish (short >=
+    long), bearish when both agree bearish. Returns CALL for bullish, PUT
+    for bearish, None when the clouds disagree -- i.e. not an "A+" setup.
+
+    Matches the indicator's "Cloud 1 + Cloud 3 (strict)" confluence mode:
+    cloud 1 = EMA8/EMA9 (green=bull/magenta=bear), cloud 3 = EMA34/EMA50
+    (blue=bull/orange=bear).
+
+    Caveat: bars only ever cover the current session (this system doesn't
+    carry bar history across days), so the 34/50 cloud is still in its
+    early "warm-up" window for roughly the first 30-50 minutes after open
+    -- less settled than the same indicator on a TradingView chart, which
+    has continuous multi-day history to draw on. It's still a well-defined
+    number the whole time, just a noisier one early on.
+    """
+    if not bars:
+        return None
+    hl2 = [(b.high + b.low) / 2 for b in bars]
+    ema8 = _ema(hl2, 8)
+    ema9 = _ema(hl2, 9)
+    ema34 = _ema(hl2, 34)
+    ema50 = _ema(hl2, 50)
+    if ema8 >= ema9 and ema34 >= ema50:
+        return OptionType.CALL
+    if ema8 < ema9 and ema34 < ema50:
+        return OptionType.PUT
+    return None
+
+
 def generate_signal(
     bars: list[Bar],
     market_open: dt.time,
@@ -57,8 +103,9 @@ def generate_signal(
     volume_multiplier: float = 1.5,
     volume_lookback_bars: int = 6,
     breakout_buffer_pct: float = 0.001,
+    use_ema_cloud_filter: bool = True,
 ) -> TradeSignal | None:
-    """Evaluate the latest bar against the opening range, plus three optional
+    """Evaluate the latest bar against the opening range, plus four optional
     confirming filters (each independently toggleable):
 
     - VWAP: breakout must be on the correct side of session VWAP too.
@@ -81,8 +128,14 @@ def generate_signal(
     - Breakout buffer: the close must clear the ORB level by
       breakout_buffer_pct, not just tick through it by any amount -- cuts
       down on immediate-failure breakouts right at the level.
+    - EMA cloud confluence: the breakout direction must agree with
+      ema_cloud_bias() (Ripster EMA Cloud 8/9 + 34/50 confluence) -- an "A+"
+      setup requires the clouds to agree with the breakout, not just VWAP
+      and volume. Unlike the other filters, this one blocks (rather than
+      passes through) when there isn't a clear bias yet, since "no cloud
+      confluence" is the literal definition of not being an A+ setup.
 
-    All three trade signal frequency for signal quality; each can be
+    All four trade signal frequency for signal quality; each can be
     disabled independently for testing/comparison.
     """
     orb = opening_range(bars, market_open, orb_minutes)
@@ -117,6 +170,8 @@ def generate_signal(
             return True  # no baseline yet, or filter disabled -- don't block on it
         return latest.volume >= avg_volume * volume_multiplier
 
+    cloud_bias = ema_cloud_bias(bars) if use_ema_cloud_filter else None
+
     call_trigger = orb_high * (1 + breakout_buffer_pct)
     put_trigger = orb_low * (1 - breakout_buffer_pct)
 
@@ -124,6 +179,8 @@ def generate_signal(
         if use_vwap_filter and current_vwap is not None and latest.close <= current_vwap:
             return None
         if not volume_confirms():
+            return None
+        if use_ema_cloud_filter and cloud_bias != OptionType.CALL:
             return None
         return TradeSignal(
             option_type=OptionType.CALL,
@@ -138,6 +195,8 @@ def generate_signal(
         if use_vwap_filter and current_vwap is not None and latest.close >= current_vwap:
             return None
         if not volume_confirms():
+            return None
+        if use_ema_cloud_filter and cloud_bias != OptionType.PUT:
             return None
         return TradeSignal(
             option_type=OptionType.PUT,
@@ -154,11 +213,10 @@ def generate_signal(
 def atm_contract(chain, option_type: OptionType, underlying_price: float):
     """The contract of the given type whose strike is nearest underlying_price.
 
-    Exposed separately (not just inlined in select_strike/
-    select_cheap_otm_strike below, which both need it) so callers like
-    agent.py can look up "what would ATM even cost" for diagnostics when a
-    signal gets skipped -- e.g. to log why CHEAP_OTM_MODE's discount target
-    wasn't met, without duplicating this lookup.
+    Exposed separately (not just inlined in select_strike_by_dollar_offset
+    below) so callers like agent.py can look up "what would ATM even cost"
+    for diagnostics when a signal gets skipped, without duplicating this
+    lookup.
     """
     same_type = sorted(
         (c for c in chain if c.option_type == option_type), key=lambda c: c.strike
@@ -169,46 +227,18 @@ def atm_contract(chain, option_type: OptionType, underlying_price: float):
     return same_type[atm_index]
 
 
-def select_strike(chain, option_type: OptionType, underlying_price: float, strike_offset: int):
-    """Pick the contract nearest ATM, shifted `strike_offset` strikes OTM."""
-    same_type = sorted(
-        (c for c in chain if c.option_type == option_type), key=lambda c: c.strike
-    )
-    if not same_type:
-        return None
-    atm_index = min(range(len(same_type)), key=lambda i: abs(same_type[i].strike - underlying_price))
-    direction = 1 if option_type == OptionType.CALL else -1
-    target_index = atm_index + direction * strike_offset
-    target_index = max(0, min(target_index, len(same_type) - 1))
-    return same_type[target_index]
-
-
-def select_cheap_otm_strike(
-    chain, option_type: OptionType, underlying_price: float, min_discount_pct: float
+def select_strike_by_dollar_offset(
+    chain, option_type: OptionType, underlying_price: float, dollar_offset: float
 ):
-    """Walk strikes out-of-the-money (away from ATM) until the contract's ask
-    is at least `min_discount_pct` cheaper than the ATM contract's ask.
-
-    For small-account smoke testing, where even one ATM 0DTE contract can
-    cost more than the whole account -- picks the first strike cheap enough,
-    rather than a fixed number of strikes out, since how many strikes that
-    takes varies with the day's implied volatility.
-    """
-    same_type = sorted(
-        (c for c in chain if c.option_type == option_type), key=lambda c: c.strike
-    )
+    """Pick the contract whose strike is closest to underlying_price plus
+    (CALL) or minus (PUT) dollar_offset -- e.g. SPY breaking out at $775.00
+    with dollar_offset=1.0 targets a $776 strike for a CALL / $774 for a
+    PUT, then picks whichever available strike is nearest that target price
+    (chains aren't always priced in exact $1 increments near the money, so
+    the target itself may not exist as a real strike)."""
+    same_type = [c for c in chain if c.option_type == option_type]
     if not same_type:
         return None
-    atm_index = min(range(len(same_type)), key=lambda i: abs(same_type[i].strike - underlying_price))
-    atm_ask = same_type[atm_index].ask
-    if atm_ask <= 0:
-        return None
-    threshold = atm_ask * (1 - min_discount_pct)
     direction = 1 if option_type == OptionType.CALL else -1
-    index = atm_index
-    while 0 <= index < len(same_type):
-        candidate = same_type[index]
-        if 0 < candidate.ask <= threshold:
-            return candidate
-        index += direction
-    return None  # chain doesn't extend far enough OTM to hit the discount target
+    target = underlying_price + direction * dollar_offset
+    return min(same_type, key=lambda c: abs(c.strike - target))

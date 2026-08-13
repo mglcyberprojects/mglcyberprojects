@@ -44,7 +44,10 @@ class PaperBroker(Broker):
         return [b for b in self._download(symbol) if b.timestamp >= since]
 
     def _download(self, symbol: str) -> list[Bar]:
-        return download_bars(symbol, period="1d", interval="5m")
+        # 1-minute bars: the ORB range itself is built from the first
+        # orb_minutes of these (default 5), and breakout entries are
+        # evaluated on each 1-minute candle's close.
+        return download_bars(symbol, period="1d", interval="1m")
 
     def _years_to_expiry(self) -> float:
         now = dt.datetime.now()

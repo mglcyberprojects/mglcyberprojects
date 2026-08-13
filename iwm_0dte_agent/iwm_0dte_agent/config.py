@@ -30,9 +30,21 @@ def _env_time(name: str, default: str) -> time:
     return time(hour=hour, minute=minute)
 
 
+def _env_symbols(name: str, default: str) -> tuple[str, ...]:
+    raw = os.environ.get(name, default)
+    return tuple(s.strip().upper() for s in raw.split(",") if s.strip())
+
+
 @dataclass(frozen=True)
 class Config:
-    symbol: str = "IWM"
+    # Every ticker the agent watches and can independently hold a position
+    # in -- one position per symbol, up to len(symbols) concurrently (see
+    # agent.py's run() loop). A tuple, not a list, so Config stays hashable
+    # /truly immutable like its other fields (frozen=True doesn't stop a
+    # mutable list field from being mutated in place).
+    symbols: tuple[str, ...] = field(
+        default_factory=lambda: _env_symbols("SYMBOLS", "SPY,IWM,NVDA,MSTR,HOOD,COIN,PLTR,UBER")
+    )
 
     # Robinhood credentials for the unofficial robin_stocks client. NOT used
     # by the default --live path (USE_ROBINHOOD_MCP=true talks only to
@@ -47,27 +59,34 @@ class Config:
     # gameplan_strategy.py).
     strategy: str = field(default_factory=lambda: os.environ.get("STRATEGY", "orb").lower())
 
-    # Opening-range breakout strategy
-    orb_minutes: int = field(default_factory=lambda: _env_int("ORB_MINUTES", 15))
+    # Opening-range breakout strategy. Default 5-minute range (with 1-minute
+    # bars for both range-building and breakout entries -- see
+    # market_data.py/paper_broker.py's fetch interval) to match the
+    # ORB+EMA-cloud "A+ setup" strategy this was tuned around.
+    orb_minutes: int = field(default_factory=lambda: _env_int("ORB_MINUTES", 5))
     vwap_filter: bool = field(default_factory=lambda: os.environ.get("VWAP_FILTER", "true").lower() == "true")
-    strike_offset: int = field(default_factory=lambda: _env_int("STRIKE_OFFSET", 0))  # 0 = ATM
+
+    # How far from the current price (in dollars, not strikes) to select an
+    # entry contract: a CALL targets underlying_price + strike_dollar_offset,
+    # a PUT targets underlying_price - strike_dollar_offset, then whichever
+    # strike the chain actually has closest to that target is used. See
+    # select_strike_by_dollar_offset() in strategy.py.
+    strike_dollar_offset: float = field(default_factory=lambda: _env_float("STRIKE_DOLLAR_OFFSET", 1.0))
 
     # Additional ORB confirming filters -- each cuts signal frequency for
     # (hopefully) higher quality; see strategy.generate_signal()'s docstring.
-    # Default OFF: a real backtest comparison didn't show a clear benefit,
-    # so the agent behaves the same as it did before these existed unless
-    # you explicitly turn one on to experiment.
+    # Volume/breakout-buffer default OFF: a real backtest comparison didn't
+    # show a clear benefit, so the agent behaves the same as it did before
+    # these existed unless you explicitly turn one on to experiment.
+    # EMA cloud confluence defaults ON -- it's the primary "A+ setup"
+    # criterion this strategy is built around, not an experimental extra.
     volume_filter: bool = field(default_factory=lambda: os.environ.get("VOLUME_FILTER", "false").lower() == "true")
     volume_multiplier: float = field(default_factory=lambda: _env_float("VOLUME_MULTIPLIER", 1.5))
     volume_lookback_bars: int = field(default_factory=lambda: _env_int("VOLUME_LOOKBACK_BARS", 6))
     breakout_buffer_pct: float = field(default_factory=lambda: _env_float("BREAKOUT_BUFFER_PCT", 0.0))
-
-    # Small-account smoke-test mode: instead of strike_offset/risk-% sizing,
-    # picks the cheapest strike at least otm_min_discount_pct below the ATM
-    # contract's ask, and buys exactly 1 contract if it fits the account's
-    # buying power. See select_cheap_otm_strike() in strategy.py.
-    cheap_otm_mode: bool = field(default_factory=lambda: os.environ.get("CHEAP_OTM_MODE", "false").lower() == "true")
-    otm_min_discount_pct: float = field(default_factory=lambda: _env_float("OTM_MIN_DISCOUNT_PCT", 0.70))
+    ema_cloud_filter: bool = field(
+        default_factory=lambda: os.environ.get("EMA_CLOUD_FILTER", "true").lower() == "true"
+    )
 
     # Gameplan (hold/rejection zone) strategy
     gameplan_require_bull_close: bool = field(

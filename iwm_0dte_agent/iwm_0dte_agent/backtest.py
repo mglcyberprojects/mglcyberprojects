@@ -1,4 +1,6 @@
-"""Backtests the ORB+VWAP strategy against recent historical IWM price data.
+"""Backtests the ORB+EMA-cloud strategy against recent historical price data
+for one ticker at a time (see --symbol; defaults to the first entry in
+config.symbols).
 
 Reuses the exact same strategy.py / risk.py / pricing.py code the live and
 paper-trading agent uses, so a backtest exercises the same signal and risk
@@ -15,7 +17,7 @@ expected, does it respect stops/targets/the hard exit) -- not a prediction
 of real fill prices or realistic P&L.
 
 Usage:
-    python -m iwm_0dte_agent.backtest --days 7
+    python -m iwm_0dte_agent.backtest --symbol IWM --days 7
 """
 
 from __future__ import annotations
@@ -31,7 +33,7 @@ from .market_data import download_bars
 from .models import Bar, OptionType, TradeSignal
 from .pricing import synthetic_chain
 from .risk import RiskManager
-from .strategy import generate_signal, select_cheap_otm_strike, select_strike
+from .strategy import generate_signal, select_strike_by_dollar_offset
 
 STARTING_BUYING_POWER = 25_000.0
 
@@ -70,9 +72,11 @@ def _years_to_expiry(ts: dt.datetime, market_close: dt.time) -> float:
     return seconds_left / (365 * 24 * 3600)
 
 
-def _quote_for(config: Config, day: dt.date, ts: dt.datetime, spot: float, strike: float, option_type: OptionType):
+def _quote_for(
+    config: Config, symbol: str, day: dt.date, ts: dt.datetime, spot: float, strike: float, option_type: OptionType,
+):
     tte = _years_to_expiry(ts, config.market_close)
-    chain = synthetic_chain(config.symbol, spot, day.isoformat(), tte)
+    chain = synthetic_chain(symbol, spot, day.isoformat(), tte)
     return next((c for c in chain if c.strike == strike and c.option_type == option_type), None)
 
 
@@ -98,12 +102,13 @@ def _generate_signal(
         volume_multiplier=config.volume_multiplier,
         volume_lookback_bars=config.volume_lookback_bars,
         breakout_buffer_pct=config.breakout_buffer_pct,
+        use_ema_cloud_filter=config.ema_cloud_filter,
     )
 
 
 def simulate_day(
     bars: list[Bar], config: Config = CONFIG, gameplan_zones: GameplanZones | None = None,
-    starting_buying_power: float = STARTING_BUYING_POWER,
+    starting_buying_power: float = STARTING_BUYING_POWER, symbol: str | None = None,
 ) -> DayResult:
     """Replays one trading day's bars through the live strategy/risk logic.
 
@@ -111,17 +116,17 @@ def simulate_day(
     forward bar-by-bar through history instead of polling a real clock.
     `gameplan_zones` is only used when config.strategy == "gameplan"; a
     fresh GameplanState is created per day, matching its daily reset.
+    `symbol` defaults to config.symbols[0] -- backtesting simulates one
+    ticker per run, not all of config.symbols at once.
 
-    Also mirrors agent.py's config.cheap_otm_mode branch: strike selection
-    and position sizing follow the same cheap-OTM/1-contract-if-affordable
-    path when it's on. starting_buying_power defaults to $25,000 (a normal
-    account) -- pass something like 50 to get numbers that actually reflect
-    a small CHEAP_OTM_MODE account instead of testing the strategy logic at
-    a size nothing about your real account resembles.
+    Strike selection mirrors agent.py's select_strike_by_dollar_offset()
+    (config.strike_dollar_offset), and sizing uses risk.position_size()
+    (config.risk_pct_per_trade) -- the same two mechanisms live/paper use.
     """
     if not bars:
         return DayResult(date=dt.date.today(), skipped_reason="no data")
 
+    symbol = symbol or config.symbols[0]
     day = bars[0].timestamp.date()
     risk = RiskManager(config=config)
     buying_power = starting_buying_power
@@ -137,7 +142,7 @@ def simulate_day(
             if now_time >= config.hard_exit:
                 exit_reason = f"hard exit time reached ({config.hard_exit})"
 
-            quote = _quote_for(config, day, bar.timestamp, bar.close, position["strike"], position["option_type"])
+            quote = _quote_for(config, symbol, day, bar.timestamp, bar.close, position["strike"], position["option_type"])
             if quote is None:
                 continue
             if exit_reason is None:
@@ -168,19 +173,13 @@ def simulate_day(
             continue
 
         tte = _years_to_expiry(bar.timestamp, config.market_close)
-        chain = synthetic_chain(config.symbol, signal.underlying_price, day.isoformat(), tte)
-        if config.cheap_otm_mode:
-            contract = select_cheap_otm_strike(
-                chain, signal.option_type, signal.underlying_price, config.otm_min_discount_pct
-            )
-        else:
-            contract = select_strike(chain, signal.option_type, signal.underlying_price, config.strike_offset)
+        chain = synthetic_chain(symbol, signal.underlying_price, day.isoformat(), tte)
+        contract = select_strike_by_dollar_offset(
+            chain, signal.option_type, signal.underlying_price, config.strike_dollar_offset
+        )
         if contract is None or contract.ask <= 0:
             continue
-        if config.cheap_otm_mode:
-            quantity = risk.cheap_otm_position_size(buying_power, contract.ask)
-        else:
-            quantity = risk.position_size(buying_power, contract.ask)
+        quantity = risk.position_size(buying_power, contract.ask)
         if quantity <= 0:
             continue
 
@@ -196,7 +195,7 @@ def simulate_day(
         # Historical data ran out before the hard exit time -- close at the
         # last available bar rather than leaving a phantom open position.
         last_bar = bars[-1]
-        quote = _quote_for(config, day, last_bar.timestamp, last_bar.close, position["strike"], position["option_type"])
+        quote = _quote_for(config, symbol, day, last_bar.timestamp, last_bar.close, position["strike"], position["option_type"])
         exit_price = quote.bid if quote else position["entry_price"]
         pnl = (exit_price - position["entry_price"]) * position["quantity"] * 100
         result.trades.append(SimTrade(
@@ -250,20 +249,22 @@ def _write_csv(results: list[DayResult], path: str) -> None:
 
 
 def run_backtest(
-    days: int, interval: str = "5m", config: Config = CONFIG, out_csv: str = "backtest_results.csv",
+    days: int, interval: str = "1m", config: Config = CONFIG, out_csv: str = "backtest_results.csv",
     gameplan_zones: GameplanZones | None = None, starting_buying_power: float = STARTING_BUYING_POWER,
+    symbol: str | None = None,
 ) -> list[DayResult]:
-    by_day = fetch_historical_bars(config.symbol, days, interval)
+    symbol = symbol or config.symbols[0]
+    by_day = fetch_historical_bars(symbol, days, interval)
     if not by_day:
         print(
-            f"\nNo historical data came back for {config.symbol} over the last {days} day(s) "
+            f"\nNo historical data came back for {symbol} over the last {days} day(s) "
             f"at interval={interval}. This means the download failed or returned nothing -- "
             f"not that no trades happened. Check your network connection and try again before "
             f"trusting a '0 trades' result.\n"
         )
         return []
     results = [
-        simulate_day(bars, config, gameplan_zones, starting_buying_power)
+        simulate_day(bars, config, gameplan_zones, starting_buying_power, symbol=symbol)
         for _day, bars in sorted(by_day.items())
     ]
     _print_report(results)
@@ -273,10 +274,14 @@ def run_backtest(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Backtest the IWM 0DTE ORB+VWAP or gameplan strategy against recent history")
+    parser = argparse.ArgumentParser(description="Backtest the ORB+EMA-cloud or gameplan strategy against recent history")
+    parser.add_argument("--symbol", default=None,
+                         help="Ticker to backtest (default: the first entry in SYMBOLS from .env). "
+                              "Backtests one ticker per run, not all of SYMBOLS at once.")
     parser.add_argument("--days", type=int, default=7, help="Calendar days of history to pull (default 7, covers last trading week)")
-    parser.add_argument("--interval", default="5m", choices=["1m", "2m", "5m", "15m", "30m"],
-                         help="Bar size. 1m only available for roughly the last 7 trading days.")
+    parser.add_argument("--interval", default="1m", choices=["1m", "2m", "5m", "15m", "30m"],
+                         help="Bar size. Default 1m to match live/paper's 1-minute entries and 5-minute "
+                              "ORB (only available for roughly the last 7 trading days).")
     parser.add_argument("--out", default="backtest_results.csv", help="CSV output path")
     parser.add_argument("--strategy", default=None, choices=["orb", "gameplan"],
                          help="Override STRATEGY from .env for this run.")
@@ -286,10 +291,7 @@ def main() -> None:
     parser.add_argument("--reject-high", type=float, help="Gameplan strategy: rejection zone high")
     parser.add_argument(
         "--buying-power", type=float, default=STARTING_BUYING_POWER,
-        help=f"Starting buying power for the simulated account (default {STARTING_BUYING_POWER:g}). "
-             "Pass something like 50 to get numbers that reflect a small CHEAP_OTM_MODE account -- "
-             "at the default $25,000, cheap_otm_position_size() can always afford 1 contract, so "
-             "CHEAP_OTM_MODE's 'does this fit my account' behavior never actually gets exercised.",
+        help=f"Starting buying power for the simulated account (default {STARTING_BUYING_POWER:g}).",
     )
     args = parser.parse_args()
 
@@ -316,6 +318,7 @@ def main() -> None:
     run_backtest(
         days=args.days, interval=args.interval, config=config, out_csv=args.out,
         gameplan_zones=gameplan_zones, starting_buying_power=args.buying_power,
+        symbol=args.symbol,
     )
 
 

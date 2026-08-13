@@ -151,8 +151,10 @@ WHAT THIS DOES NOT COVER
 - Assumes you could always get filled at the synthetic ask (buy) / bid
   (sell) price shown -- real fills, especially on illiquid strikes, can
   be worse.
-- This is a single-symbol backtester (IWM 0DTE only), matching what the
-  live agent actually trades. Two strategies are supported (ORB and
-  gameplan), matching what the live agent supports.
+- This is a single-symbol-per-run backtester (--symbol, defaults to the
+  first entry in SYMBOLS) -- it does not simulate all tracked tickers at
+  once, even though the live/paper agent tracks all of SYMBOLS
+  concurrently. Two strategies are supported (ORB and gameplan), matching
+  what the live agent supports.
 
 ====================================================================

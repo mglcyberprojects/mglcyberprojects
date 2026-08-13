@@ -66,23 +66,14 @@ class RiskManager:
         contracts = int(risk_dollars // max_loss_per_contract)
         return max(0, min(contracts, self.config.max_contracts_per_trade))
 
-    def cheap_otm_position_size(self, buying_power: float, premium_per_contract: float) -> int:
-        """Small-account smoke-test sizing: exactly 1 contract if it fits
-        buying_power, else 0. No fractional sizing is possible with a
-        handful of dollars, so the risk_pct_per_trade formula doesn't apply."""
-        if premium_per_contract <= 0:
-            return 0
-        return 1 if premium_per_contract * 100 <= buying_power else 0
-
     _QUANTITY_CHOICES = (1, 3, 5)
 
     def quantity_choices(self, buying_power: float, premium_per_contract: float) -> list[int]:
         """Affordable candidates from (1, 3, 5) contracts, capped at
         max_contracts_per_trade -- used for the live/paper entry flow,
         where the human picks a quantity directly at approval time instead
-        of the agent computing a single one via position_size()/
-        cheap_otm_position_size(). Those two are unaffected and still drive
-        backtest.py's unattended sizing."""
+        of the agent computing a single one via position_size(), which is
+        unaffected and still drives backtest.py's unattended sizing."""
         if premium_per_contract <= 0:
             return []
         cost_per_contract = premium_per_contract * 100
