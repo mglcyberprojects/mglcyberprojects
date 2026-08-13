@@ -320,7 +320,7 @@ def main() -> None:
     parser.add_argument("--days", type=int, default=7, help="Calendar days of history to pull (default 7, covers last trading week)")
     parser.add_argument("--interval", default="1m", choices=["1m", "2m", "5m", "15m", "30m"],
                          help="Bar size. Default 1m to match live/paper's 1-minute entries and 5-minute "
-                              "ORB (only available for roughly the last 7 trading days).")
+                              "ORB (only available for the last ~8 calendar days).")
     parser.add_argument("--out", default="backtest_results.csv", help="CSV output path")
     parser.add_argument("--strategy", default=None, choices=["orb", "gameplan"],
                          help="Override STRATEGY from .env for this run.")
@@ -333,6 +333,16 @@ def main() -> None:
         help=f"Starting buying power for the simulated account (default {STARTING_BUYING_POWER:g}).",
     )
     args = parser.parse_args()
+
+    if args.interval == "1m" and args.days > 8:
+        parser.error(
+            f"--interval 1m only has ~8 calendar days of history available from yfinance "
+            f"(you asked for --days {args.days}) -- Yahoo returns an unrelated-looking "
+            f"'possibly delisted' error past that, not because the symbol is invalid.\n"
+            f"Use --days 8 or lower with --interval 1m, or drop to a coarser --interval "
+            f"(e.g. 5m, up to ~60 days) for a longer lookback -- note that won't match "
+            f"live/paper's 1-minute ORB/entry granularity exactly."
+        )
 
     config = CONFIG
     if args.strategy is not None:

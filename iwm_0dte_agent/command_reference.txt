@@ -25,7 +25,10 @@ python -m iwm_0dte_agent.backtest --symbol IWM --days 14
     Reads strategy/risk parameters from .env -- edit .env, rerun, compare.
 
     --symbol TICKER                Which symbol to backtest (default: first entry in SYMBOLS)
-    --interval 1m|2m|5m|15m|30m   Bar size (default 1m, matching live/paper's 1-min entries; 1m only ~7 days back)
+    --interval 1m|2m|5m|15m|30m   Bar size (default 1m, matching live/paper's 1-min entries; 1m only
+                                     ~8 days back -- --days above 8 with --interval 1m errors out
+                                     immediately instead of hitting Yahoo's confusing "possibly
+                                     delisted" error)
     --out FILE.csv                 Where to write the full trade log (default backtest_results.csv)
     --strategy orb|gameplan        Override STRATEGY from .env for this run only
     --buying-power N                Starting account size (default 25000).

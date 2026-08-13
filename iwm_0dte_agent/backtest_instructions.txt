@@ -100,8 +100,10 @@ USEFUL VARIATIONS
 Backtest a longer window (e.g. the last month):
      python -m iwm_0dte_agent.backtest --days 30
 
-Use finer 1-minute bars instead of 5-minute (only available for roughly
-the last 7 trading days -- Yahoo Finance's own limit, not this tool's):
+Use finer 1-minute bars instead of 5-minute (only available for the last
+~8 calendar days -- Yahoo Finance's own limit, not this tool's; --days
+above 8 with --interval 1m errors out immediately with this same limit
+rather than letting Yahoo's confusing "possibly delisted" error through):
      python -m iwm_0dte_agent.backtest --days 7 --interval 1m
 
 Write the CSV somewhere else:
