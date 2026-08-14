@@ -21,12 +21,15 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class StatusRequest:
-    """A pending on-demand status query from the user -- "new" for a fresh
-    /status command, "refresh" for a tap on an existing status message's
-    Refresh button (message_id is which message to edit in place)."""
+    """A pending on-demand status query or action from the user -- "new" for
+    a fresh /status command, "refresh" for a tap on an existing status
+    message's Refresh button (message_id is which message to edit in
+    place), "sell" for a tap on a per-position Sell button (symbol is which
+    open position to close)."""
 
-    kind: Literal["new", "refresh"]
+    kind: Literal["new", "refresh", "sell"]
     message_id: int | None = None
+    symbol: str | None = None
 
 
 class Notifier(Protocol):

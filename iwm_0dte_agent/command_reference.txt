@@ -62,24 +62,33 @@ TELEGRAM (once TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID are set in .env)
 ------------------------------------------------------------------------
 /status  or  /positions     On-demand: open positions (live P&L), buying
                              power, trades today, today's realized P&L.
-                             Rendered as a list (today always 0 or 1 entry).
+                             Rendered as a list, one row per symbol with an
+                             open position (up to len(SYMBOLS) at once).
 Tap the persistent "Positions" button   Same reply as /status -- always
                                          visible under the message box,
                                          sent once automatically at startup.
 Tap "Refresh" on a status card          Re-fetches and edits that same
                                          message in place with fresh numbers.
+Tap "💰 Sell SYMBOL TYPE $STRIKE"        One button per open position on the
+                                         status card -- closes it right now
+                                         regardless of stop/target state.
+                                         Still requires a follow-up Approve/
+                                         Decline, same as any other close.
 Quantity buttons (1x / 3x / 5x) + Decline   On every proposed entry -- picks
                                              how many contracts, whichever
                                              you can afford. Nothing is ever
                                              submitted without a tap.
-Approve / Decline buttons               On every proposed exit -- exits
-                                         always close the full existing
-                                         position, so there's no quantity
-                                         to pick.
+Approve / Decline buttons               On every proposed exit (automatic
+                                         or Sell-triggered) -- exits always
+                                         close the full existing position,
+                                         so there's no quantity to pick.
 
-Note: /status, Positions, and Refresh are checked every STATUS_POLL_SECONDS
-(default 5s) -- independent of POLL_SECONDS, which paces the trading logic
-(broker calls, signal evaluation) and is much slower (default 60s).
+Note: /status, Positions, Refresh, and Sell are checked every
+STATUS_POLL_SECONDS (default 5s) -- independent of POLL_SECONDS, which
+paces the trading logic (broker calls, signal evaluation) and is much
+slower (default 60s). A Sell tap's follow-up confirmation blocks the whole
+agent loop (including further status checks) until you Approve/Decline it
+or it times out, same as any other pending confirmation already does.
 Responding to a specific proposed trade responds immediately (that's a
 dedicated wait, not the shared poll).
 

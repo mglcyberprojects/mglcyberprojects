@@ -98,6 +98,26 @@ def _format_status(status: AgentStatus) -> str:
     return "\n".join(lines)
 
 
+def _status_keyboard(status: AgentStatus, message_id: int) -> dict:
+    """One Sell button per open position (closes that symbol immediately,
+    still gated by the usual confirm() Approve/Decline -- see
+    agent.py's _handle_status_requests), plus Refresh. Rebuilt fresh on
+    every post/refresh so it never goes stale relative to what's actually
+    open: editMessageText keeps whatever keyboard was already attached
+    unless a new one is passed explicitly, so update_status must always
+    pass one built from the CURRENT status, not whatever was there at
+    post_status time."""
+    rows = [
+        [{
+            "text": f"💰 Sell {p.contract.symbol} {p.contract.option_type.value.upper()} ${p.contract.strike:g}",
+            "callback_data": f"sell:{p.contract.symbol}",
+        }]
+        for p in status.positions
+    ]
+    rows.append([{"text": "🔄 Refresh", "callback_data": f"refresh:{message_id}"}])
+    return {"inline_keyboard": rows}
+
+
 class TelegramError(RuntimeError):
     pass
 
@@ -422,18 +442,35 @@ class TelegramNotifier:
                 continue
             chat_id = str(cq.get("message", {}).get("chat", {}).get("id", ""))
             data = cq.get("data", "")
-            if chat_id != self._chat_id or not data.startswith("refresh:"):
+            if chat_id != self._chat_id or not (data.startswith("refresh:") or data.startswith("sell:")):
                 logger.info(
                     "poll_status_requests: ignoring callback_query (chat_id=%s authorized=%s data=%r)",
                     chat_id, chat_id == self._chat_id, data,
                 )
-                continue  # not ours, or a stale/foreign refresh tap
-            try:
-                self._call("answerCallbackQuery", callback_query_id=cq["id"], text="Refreshing…")
-            except Exception:
-                logger.exception("Failed to acknowledge Telegram refresh callback")
-            logger.info("poll_status_requests: recognized Refresh tap (message_id=%s)", cq["message"]["message_id"])
-            found.append(StatusRequest(kind="refresh", message_id=cq["message"]["message_id"]))
+                continue  # not ours, or a stale/foreign refresh/sell tap
+
+            if data.startswith("refresh:"):
+                try:
+                    self._call("answerCallbackQuery", callback_query_id=cq["id"], text="Refreshing…")
+                except Exception:
+                    logger.exception("Failed to acknowledge Telegram refresh callback")
+                logger.info("poll_status_requests: recognized Refresh tap (message_id=%s)", cq["message"]["message_id"])
+                found.append(StatusRequest(kind="refresh", message_id=cq["message"]["message_id"]))
+            else:
+                # "sell:<symbol>" -- symbols uniquely identify the open
+                # position to close (the agent holds at most one per
+                # symbol), so no nonce/staleness token is needed here the
+                # way confirm()'s per-proposal buttons use one: agent.py
+                # checks against the LIVE positions dict, not a frozen
+                # snapshot, so a tap on a stale status message (for a
+                # position already closed by then) is simply a no-op there.
+                symbol = data.split(":", 1)[1]
+                try:
+                    self._call("answerCallbackQuery", callback_query_id=cq["id"], text=f"Closing {symbol}…")
+                except Exception:
+                    logger.exception("Failed to acknowledge Telegram sell callback")
+                logger.info("poll_status_requests: recognized Sell tap (symbol=%s)", symbol)
+                found.append(StatusRequest(kind="sell", symbol=symbol))
         return found
 
     def post_status(self, status: AgentStatus) -> None:
@@ -444,20 +481,20 @@ class TelegramNotifier:
         except Exception:
             logger.exception("Failed to send Telegram status message")
             return
-        keyboard = {"inline_keyboard": [[{"text": "🔄 Refresh", "callback_data": f"refresh:{sent['message_id']}"}]]}
         try:
             self._call(
                 "editMessageReplyMarkup", chat_id=self._chat_id, message_id=sent["message_id"],
-                reply_markup=keyboard,
+                reply_markup=_status_keyboard(status, sent["message_id"]),
             )
         except Exception:
-            logger.exception("Failed to attach refresh button to status message")
+            logger.exception("Failed to attach status buttons to status message")
 
     def update_status(self, message_id: int, status: AgentStatus) -> None:
         try:
             self._call(
                 "editMessageText", chat_id=self._chat_id, message_id=message_id,
                 text=_format_status(status), parse_mode="HTML",
+                reply_markup=_status_keyboard(status, message_id),
             )
         except Exception:
             logger.exception("Failed to update Telegram status message")

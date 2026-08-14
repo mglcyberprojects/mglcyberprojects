@@ -300,9 +300,16 @@ def _check_exit(position: OpenPosition, broker: Broker, config: Config, risk: Ri
 
 def _try_close_position(
     position: OpenPosition, broker: Broker, risk: RiskManager, trade_log: TradeLog, live: bool,
-    config: Config, notifier: Notifier,
+    config: Config, notifier: Notifier, forced_reason: str | None = None,
 ) -> bool:
-    reason = _check_exit(position, broker, config, risk)
+    # forced_reason skips the usual stop/target/hard-exit check entirely --
+    # used for a manual Sell tap from /status (see _handle_status_requests
+    # below), which should be closeable any time regardless of whether an
+    # automatic exit condition has actually tripped yet. Everything past
+    # this point (confirm(), submit_order, alerts, trade_log) is identical
+    # either way -- a manual close still goes through the same explicit
+    # human-confirmation gate as every other order.
+    reason = forced_reason if forced_reason is not None else _check_exit(position, broker, config, risk)
     if reason is None:
         return False
 
@@ -365,21 +372,48 @@ def _build_agent_status(
 
 
 def _handle_status_requests(
-    notifier: Notifier, broker: Broker, risk: RiskManager, positions: dict[str, OpenPosition], config: Config,
+    notifier: Notifier, broker: Broker, risk: RiskManager, trade_log: TradeLog, config: Config, live: bool,
+    positions: dict[str, OpenPosition],
 ) -> None:
-    """On-demand /status command + Refresh button -- checked every
-    status_poll_seconds (default 5s), independent of poll_seconds (which
-    paces the trading logic), so replies stay snappy without evaluating
-    signals any more often. Builds one live status snapshot (across every
-    symbol with an open position) and reuses it for every pending request
-    this cycle, rather than re-fetching per request, since they'd all show
-    the same moment-in-time numbers anyway.
+    """On-demand /status command, Refresh button, and per-position Sell
+    button -- checked every status_poll_seconds (default 5s), independent
+    of poll_seconds (which paces the trading logic), so replies stay snappy
+    without evaluating signals any more often.
+
+    A Sell tap closes that symbol's position right now regardless of
+    whether an automatic stop/target/hard-exit condition has tripped --
+    still gated by the normal notifier.confirm() Approve/Decline, same as
+    every other order (see _try_close_position's forced_reason). Note this
+    means the agent loop -- including this status-poll cycle itself --
+    blocks until that confirmation resolves or times out, exactly like any
+    other pending confirm() already does; a Sell tap isn't instant-execute.
+
+    The status snapshot (needed for "new"/"refresh") is built lazily, and
+    only once, so a cycle with only Sell taps pending doesn't pay for an
+    unused broker call, and multiple new/refresh requests in the same
+    cycle reuse the same moment-in-time numbers rather than re-fetching
+    per request.
     """
     pending = notifier.poll_status_requests()
     if not pending:
         return
-    status = _build_agent_status(positions, broker, risk, config)
+
+    status: AgentStatus | None = None
     for req in pending:
+        if req.kind == "sell":
+            position = positions.get(req.symbol)
+            if position is None:
+                notifier.alert(f"No open {req.symbol} position to sell (already closed?).")
+                continue
+            if _try_close_position(
+                position, broker, risk, trade_log, live, config, notifier,
+                forced_reason="manual close requested via Telegram",
+            ):
+                del positions[req.symbol]
+            continue
+
+        if status is None:
+            status = _build_agent_status(positions, broker, risk, config)
         if req.kind == "new":
             notifier.post_status(status)
         else:
@@ -387,15 +421,15 @@ def _handle_status_requests(
 
 
 def _check_status_safely(
-    notifier: Notifier, broker: Broker, risk: RiskManager, positions: dict[str, OpenPosition], config: Config,
-    alerted_reasons: set[tuple[dt.date, str]],
+    notifier: Notifier, broker: Broker, risk: RiskManager, trade_log: TradeLog, config: Config, live: bool,
+    positions: dict[str, OpenPosition], alerted_reasons: set[tuple[dt.date, str]],
 ) -> None:
     # Its own try/except, deliberately separate from the trading-logic
     # try/except in run()'s main loop: a broker/strategy error there (e.g. a
     # signal that can't fetch a quote) must not also block /status and the
     # Positions button from responding every time it recurs.
     try:
-        _handle_status_requests(notifier, broker, risk, positions, config)
+        _handle_status_requests(notifier, broker, risk, trade_log, config, live, positions)
     except Exception as exc:
         logger.exception("Error handling status requests")
         _maybe_alert_loop_error(exc, notifier, alerted_reasons)
@@ -501,7 +535,7 @@ def run(live: bool, once: bool, config: Config = CONFIG) -> None:
                 logger.exception("Error in agent loop iteration (%s)", symbol)
                 _maybe_alert_loop_error(exc, notifier, alerted_reasons)
 
-        _check_status_safely(notifier, broker, risk, positions, config, alerted_reasons)
+        _check_status_safely(notifier, broker, risk, trade_log, config, live, positions, alerted_reasons)
 
         if once:
             break
@@ -516,7 +550,7 @@ def run(live: bool, once: bool, config: Config = CONFIG) -> None:
             nap = max(1, min(config.status_poll_seconds, remaining))
             time_module.sleep(nap)
             remaining -= nap
-            _check_status_safely(notifier, broker, risk, positions, config, alerted_reasons)
+            _check_status_safely(notifier, broker, risk, trade_log, config, live, positions, alerted_reasons)
 
 
 def main() -> None:

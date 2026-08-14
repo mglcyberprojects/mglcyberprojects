@@ -442,6 +442,46 @@ def test_poll_status_requests_ignores_refresh_from_wrong_chat():
     assert notifier.poll_status_requests() == []
 
 
+def _sell_callback_update(update_id, chat_id="42", symbol="IWM", callback_id="cbq-2"):
+    return {
+        "update_id": update_id,
+        "callback_query": {
+            "id": callback_id,
+            "message": {"chat": {"id": chat_id}, "message_id": 42},
+            "data": f"sell:{symbol}",
+        },
+    }
+
+
+def test_poll_status_requests_recognizes_sell_callback_and_acks_it():
+    notifier = make_notifier()
+    call_log = []
+
+    def fake_call(method, **params):
+        call_log.append((method, params))
+        if method == "getUpdates":
+            return [_sell_callback_update(1, symbol="IWM")]
+        return {}
+
+    notifier._call = fake_call
+
+    requests = notifier.poll_status_requests()
+
+    assert len(requests) == 1
+    assert requests[0].kind == "sell"
+    assert requests[0].symbol == "IWM"
+    ack_calls = [p for m, p in call_log if m == "answerCallbackQuery"]
+    assert ack_calls and ack_calls[0]["callback_query_id"] == "cbq-2"
+    assert "IWM" in ack_calls[0]["text"]
+
+
+def test_poll_status_requests_ignores_sell_from_wrong_chat():
+    notifier = make_notifier()
+    notifier._call = lambda method, **params: [_sell_callback_update(1, chat_id="999")]
+
+    assert notifier.poll_status_requests() == []
+
+
 def _make_status(with_position=True, pnl_bid=3.00):
     positions = []
     if with_position:
@@ -476,7 +516,37 @@ def test_post_status_sends_html_then_attaches_refresh_button():
     assert "Unrealized P&L" in send_params["text"]
     markup_params = call_log[1][1]
     assert markup_params["message_id"] == 42
-    assert markup_params["reply_markup"]["inline_keyboard"][0][0]["callback_data"] == "refresh:42"
+    # Refresh is always the last row; _make_status() has one open position,
+    # so a Sell row for it comes first -- see test_post_status_adds_sell_button below.
+    assert markup_params["reply_markup"]["inline_keyboard"][-1][0]["callback_data"] == "refresh:42"
+
+
+def test_post_status_adds_sell_button_per_open_position():
+    notifier = make_notifier()
+    fake_call = FakeCall(result={"message_id": 42})
+    notifier._call = fake_call
+
+    notifier.post_status(_make_status())
+
+    markup_call = fake_call.calls[1]
+    rows = markup_call[1]["reply_markup"]["inline_keyboard"]
+    assert len(rows) == 2  # one Sell row + Refresh
+    sell_button = rows[0][0]
+    assert sell_button["callback_data"] == "sell:IWM"
+    assert sell_button["text"] == "💰 Sell IWM CALL $228"
+
+
+def test_post_status_no_sell_buttons_when_flat():
+    notifier = make_notifier()
+    fake_call = FakeCall(result={"message_id": 42})
+    notifier._call = fake_call
+
+    notifier.post_status(_make_status(with_position=False))
+
+    markup_call = fake_call.calls[1]
+    rows = markup_call[1]["reply_markup"]["inline_keyboard"]
+    assert len(rows) == 1  # Refresh only
+    assert rows[0][0]["callback_data"] == "refresh:42"
 
 
 def test_post_status_shows_no_position_line_when_flat():
@@ -540,6 +610,32 @@ def test_update_status_edits_message_text_in_place():
     assert params["message_id"] == 777
     assert params["parse_mode"] == "HTML"
     assert "<b>Status</b>" in params["text"]
+
+
+def test_update_status_rebuilds_keyboard_from_the_current_status():
+    # editMessageText keeps whatever keyboard was already attached unless a
+    # new one is passed explicitly -- update_status must always pass a
+    # freshly-built one, or the Sell buttons would go stale (still showing
+    # a position that's since closed, or missing one that's since opened)
+    # across refreshes.
+    notifier = make_notifier()
+    fake_call = FakeCall()
+    notifier._call = fake_call
+
+    notifier.update_status(777, _make_status())
+
+    _, params = fake_call.calls[0]
+    rows = params["reply_markup"]["inline_keyboard"]
+    assert rows[0][0]["callback_data"] == "sell:IWM"
+    assert rows[-1][0]["callback_data"] == "refresh:777"
+
+    fake_call.calls.clear()
+    notifier.update_status(777, _make_status(with_position=False))
+
+    _, params = fake_call.calls[0]
+    rows = params["reply_markup"]["inline_keyboard"]
+    assert len(rows) == 1  # no more Sell row -- the position closed since the last refresh
+    assert rows[0][0]["callback_data"] == "refresh:777"
 
 
 def test_show_positions_shortcut_sends_persistent_reply_keyboard():

@@ -1,8 +1,10 @@
 import datetime as dt
 
-from iwm_0dte_agent.agent import _build_agent_status, _check_exit, _handle_status_requests, _try_open_position
+from iwm_0dte_agent.agent import (
+    _build_agent_status, _check_exit, _handle_status_requests, _try_close_position, _try_open_position,
+)
 from iwm_0dte_agent.config import Config
-from iwm_0dte_agent.models import Bar, OpenPosition, OptionContract, OptionType
+from iwm_0dte_agent.models import Bar, OpenPosition, OptionContract, OptionType, OrderResult
 from iwm_0dte_agent.notifier import StatusRequest
 from iwm_0dte_agent.risk import RiskManager
 
@@ -15,6 +17,7 @@ class FakeBroker:
         self.get_option_quote_calls = 0
         self.get_buying_power_calls = 0
         self.get_underlying_price_calls = 0
+        self.submit_order_calls: list[tuple] = []
 
     def get_option_quote(self, contract_id):
         self.get_option_quote_calls += 1
@@ -28,12 +31,20 @@ class FakeBroker:
         self.get_underlying_price_calls += 1
         return self.underlying_price
 
+    def submit_order(self, contract, quantity, price, side):
+        self.submit_order_calls.append((contract, quantity, price, side))
+        return OrderResult(submitted=True, broker_order_id="ord-1", detail="ok")
+
 
 class FakeStatusNotifier:
-    def __init__(self, pending):
+    def __init__(self, pending, confirm_quantity: int | None = None):
         self._pending = pending
         self.posted = []
         self.updated = []
+        self.alerts: list[str] = []
+        # None -> confirm() approves with the order's own quantity (i.e.
+        # closes always approve); pass 0 to simulate a decline.
+        self._confirm_quantity = confirm_quantity
 
     def poll_status_requests(self):
         return self._pending
@@ -43,6 +54,12 @@ class FakeStatusNotifier:
 
     def update_status(self, message_id, status):
         self.updated.append((message_id, status))
+
+    def alert(self, text):
+        self.alerts.append(text)
+
+    def confirm(self, order, live):
+        return order.quantity if self._confirm_quantity is None else self._confirm_quantity
 
 
 def _make_position(
@@ -167,7 +184,7 @@ def test_handle_status_requests_does_nothing_when_no_pending():
     risk = RiskManager(config=Config())
     notifier = FakeStatusNotifier(pending=[])
 
-    _handle_status_requests(notifier, broker, risk, {}, Config())
+    _handle_status_requests(notifier, broker, risk, FakeTradeLog(), Config(), False, {})
 
     assert notifier.posted == []
     assert notifier.updated == []
@@ -179,7 +196,7 @@ def test_handle_status_requests_dispatches_new_to_post_status():
     risk = RiskManager(config=Config())
     notifier = FakeStatusNotifier(pending=[StatusRequest(kind="new")])
 
-    _handle_status_requests(notifier, broker, risk, {}, Config())
+    _handle_status_requests(notifier, broker, risk, FakeTradeLog(), Config(), False, {})
 
     assert len(notifier.posted) == 1
     assert notifier.updated == []
@@ -190,7 +207,7 @@ def test_handle_status_requests_dispatches_refresh_to_update_status_with_message
     risk = RiskManager(config=Config())
     notifier = FakeStatusNotifier(pending=[StatusRequest(kind="refresh", message_id=555)])
 
-    _handle_status_requests(notifier, broker, risk, {}, Config())
+    _handle_status_requests(notifier, broker, risk, FakeTradeLog(), Config(), False, {})
 
     assert notifier.posted == []
     assert len(notifier.updated) == 1
@@ -202,11 +219,99 @@ def test_handle_status_requests_reuses_one_snapshot_for_multiple_pending():
     risk = RiskManager(config=Config())
     notifier = FakeStatusNotifier(pending=[StatusRequest(kind="new"), StatusRequest(kind="refresh", message_id=1)])
 
-    _handle_status_requests(notifier, broker, risk, {}, Config())
+    _handle_status_requests(notifier, broker, risk, FakeTradeLog(), Config(), False, {})
 
     assert broker.get_buying_power_calls == 1  # one snapshot built, reused for both requests
     assert len(notifier.posted) == 1
     assert len(notifier.updated) == 1
+
+
+# --- Sell button: manual close from /status, and _try_close_position's forced_reason ---
+
+def test_try_close_position_forced_reason_closes_even_when_nothing_tripped():
+    # bid 2.50 is comfortably between stop_loss=1.00 and profit_target=4.00
+    # -- _check_exit() alone would return None here, but forced_reason
+    # should close it anyway, exactly like a manual Sell tap needs to.
+    position = _make_position(stop_loss=1.00, profit_target=4.00)
+    broker = FakeBroker(quote_bid=2.50, buying_power=25_000.0)
+    risk = RiskManager(config=Config())
+    trade_log = FakeTradeLog()
+    notifier = FakeStatusNotifier(pending=[])
+
+    closed = _try_close_position(
+        position, broker, risk, trade_log, False, Config(), notifier,
+        forced_reason="manual close requested via Telegram",
+    )
+
+    assert closed is True
+    assert len(broker.submit_order_calls) == 1
+    filled = [e for e in trade_log.entries if e["event"] == "filled_close"]
+    assert len(filled) == 1
+    assert filled[0]["reason"] == "manual close requested via Telegram"
+
+
+def test_handle_status_requests_sell_closes_the_position():
+    positions = {"IWM": _make_position(stop_loss=1.00, profit_target=4.00)}
+    broker = FakeBroker(quote_bid=2.50, buying_power=25_000.0)
+    risk = RiskManager(config=Config())
+    trade_log = FakeTradeLog()
+    notifier = FakeStatusNotifier(pending=[StatusRequest(kind="sell", symbol="IWM")])
+
+    _handle_status_requests(notifier, broker, risk, trade_log, Config(), False, positions)
+
+    assert "IWM" not in positions
+    assert len(broker.submit_order_calls) == 1
+    # A sell request isn't a status request -- no status message gets built/sent for it.
+    assert notifier.posted == []
+    assert notifier.updated == []
+
+
+def test_handle_status_requests_sell_declined_leaves_position_open():
+    positions = {"IWM": _make_position()}
+    broker = FakeBroker(quote_bid=2.50, buying_power=25_000.0)
+    risk = RiskManager(config=Config())
+    trade_log = FakeTradeLog()
+    notifier = FakeStatusNotifier(pending=[StatusRequest(kind="sell", symbol="IWM")], confirm_quantity=0)
+
+    _handle_status_requests(notifier, broker, risk, trade_log, Config(), False, positions)
+
+    assert "IWM" in positions
+    assert broker.submit_order_calls == []
+
+
+def test_handle_status_requests_sell_missing_position_alerts_without_error():
+    positions: dict = {}
+    broker = FakeBroker(quote_bid=2.50, buying_power=25_000.0)
+    risk = RiskManager(config=Config())
+    trade_log = FakeTradeLog()
+    notifier = FakeStatusNotifier(pending=[StatusRequest(kind="sell", symbol="IWM")])
+
+    _handle_status_requests(notifier, broker, risk, trade_log, Config(), False, positions)
+
+    assert positions == {}
+    assert broker.submit_order_calls == []
+    assert any("No open IWM position to sell" in a for a in notifier.alerts)
+
+
+def test_handle_status_requests_sell_and_refresh_together_reflects_the_close():
+    # A refresh in the same batch as a sell should see the UPDATED
+    # positions dict (the sell is processed first in arrival order), not a
+    # stale snapshot still showing the now-closed position.
+    positions = {"IWM": _make_position(stop_loss=1.00, profit_target=4.00)}
+    broker = FakeBroker(quote_bid=2.50, buying_power=25_000.0)
+    risk = RiskManager(config=Config())
+    trade_log = FakeTradeLog()
+    notifier = FakeStatusNotifier(pending=[
+        StatusRequest(kind="sell", symbol="IWM"),
+        StatusRequest(kind="refresh", message_id=1),
+    ])
+
+    _handle_status_requests(notifier, broker, risk, trade_log, Config(), False, positions)
+
+    assert "IWM" not in positions
+    assert len(notifier.updated) == 1
+    _, status = notifier.updated[0]
+    assert status.positions == []
 
 
 # --- _try_open_position: skip-branch diagnostic logging ---

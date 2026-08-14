@@ -420,12 +420,28 @@ rule for the `/status` command and Refresh button below).
 **On-demand status:** send `/status` or `/positions` to the chat any time to
 get a snapshot — every open position (contract, entry price, live bid,
 unrealized P&L, stop loss/profit target) or "No open positions", plus
-buying power, trades today, and today's realized P&L. Rendered as a list:
-today the agent only ever holds one position at a time (see above), so it's
-usually one entry or none, but the reply is ready to show more if that
-changes. The reply has a **🔄 Refresh** button that re-fetches everything
-and edits the same message in place, rather than sending a new one each
-time.
+buying power, trades today, and today's realized P&L. Rendered as a list,
+one row per symbol with an open position (up to `len(SYMBOLS)` at once,
+see "Multi-ticker tracking" above). The reply has a **🔄 Refresh** button
+that re-fetches everything and edits the same message in place, rather
+than sending a new one each time.
+
+**Selling from the status reply:** each open position also gets its own
+**💰 Sell SYMBOL TYPE $STRIKE** button — tap it to close that position right
+now, regardless of whether its stop loss/profit target has actually been
+hit yet. This doesn't place an order immediately: it triggers the exact
+same close proposal (current bid, P&L, Approve/Decline buttons) that an
+automatic stop/target/hard-exit trigger would, with the reason shown as
+"manual close requested via Telegram" — so a Sell tap still needs one more
+tap to actually confirm, same explicit-confirmation gate as every other
+order in this project. Note that while that confirmation is pending, the
+agent loop (including further `/status`/Refresh/Sell handling) is blocked
+waiting on your Approve/Decline, exactly like any other pending
+confirmation already blocks it — this isn't unique to Sell, just worth
+knowing since a slow response holds up everything else too. The Sell
+buttons are rebuilt fresh on every post and refresh, so they never go
+stale relative to what's actually open (a closed position's button
+disappears on the next refresh; a newly-opened one's button appears).
 
 At startup the agent also sends a persistent **📊 Positions** button that
 replaces your chat's normal keyboard — it stays there under the message box
