@@ -484,12 +484,17 @@ class MCPBroker(Broker):
         return values[0] if values else None
 
     def _fetch_option_instruments(self, chain_id: str, expiration_date: str) -> list[dict]:
+        # Deliberately NOT filtering by tradability="tradable" server-side --
+        # get_0dte_chain() below needs to see non-tradable instruments too
+        # (e.g. "position_closing_only") to tell an account-level trading
+        # restriction apart from "no options exist for this date" in its
+        # diagnostic logging, rather than both looking identically empty.
         instruments: list[dict] = []
         cursor: str | None = None
         for _ in range(20):  # pagination safety cap
             args = {
                 "chain_id": chain_id, "expiration_dates": expiration_date,
-                "state": "active", "tradability": "tradable",
+                "state": "active",
             }
             if cursor:
                 args["cursor"] = cursor
@@ -543,9 +548,27 @@ class MCPBroker(Broker):
         instruments = self._fetch_option_instruments(chain["id"], today)
         if not instruments:
             return []
-        quotes = self._fetch_option_quotes([i["id"] for i in instruments if i.get("id")])
+
+        tradable = [i for i in instruments if i.get("tradability") == "tradable"]
+        if not tradable:
+            # Distinguishes "Robinhood has no 0DTE instruments for this
+            # symbol today" (instruments == []) from "instruments exist but
+            # none are openable" -- the latter is almost always an
+            # account-level restriction (PDT, options approval level,
+            # Agentic Trading permissions), not a data/parsing problem, so
+            # it needs a human to check the account, not a code fix.
+            statuses = sorted({i.get("tradability", "unknown") for i in instruments})
+            logger.warning(
+                "%s has %d active 0DTE instrument(s) for %s, but none have tradability=tradable "
+                "(status seen: %s) -- likely an account-level restriction (PDT, options approval "
+                "level, Agentic Trading permissions), not a data issue. Check your Robinhood account.",
+                symbol, len(instruments), today, ", ".join(statuses),
+            )
+            return []
+
+        quotes = self._fetch_option_quotes([i["id"] for i in tradable if i.get("id")])
         contracts = []
-        for instrument in instruments:
+        for instrument in tradable:
             quote = quotes.get(instrument.get("id"))
             if quote is None:
                 continue

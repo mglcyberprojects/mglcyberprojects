@@ -186,8 +186,8 @@ def test_get_0dte_chain_builds_contracts_from_chain_instruments_and_quotes():
             {"id": "chain-1", "expiration_dates": [TODAY], "can_open_position": True},
         ]}},
         "get_option_instruments": {"data": {"instruments": [
-            {"id": "instr-call", "chain_symbol": "IWM", "expiration_date": TODAY, "strike_price": "200.0000", "type": "call"},
-            {"id": "instr-put", "chain_symbol": "IWM", "expiration_date": TODAY, "strike_price": "200.0000", "type": "put"},
+            {"id": "instr-call", "chain_symbol": "IWM", "expiration_date": TODAY, "strike_price": "200.0000", "type": "call", "tradability": "tradable"},
+            {"id": "instr-put", "chain_symbol": "IWM", "expiration_date": TODAY, "strike_price": "200.0000", "type": "put", "tradability": "tradable"},
         ], "next": ""}},
         "get_option_quotes": {"data": {"results": [
             {"quote": {"instrument_id": "instr-call", "bid_price": "1.00", "ask_price": "1.10", "mark_price": "1.05"}},
@@ -206,6 +206,13 @@ def test_get_0dte_chain_builds_contracts_from_chain_instruments_and_quotes():
     assert calls["instr-put"].option_type == OptionType.PUT
     assert broker._instrument_cache["instr-call"]["id"] == "instr-call"
 
+    # tradability is no longer filtered server-side (see
+    # test_get_0dte_chain_returns_empty_and_logs_when_none_tradable below
+    # for why) -- get_option_instruments should only be asked for state=active.
+    instruments_call = next(a for n, a in call_tool.calls if n == "get_option_instruments")
+    assert "tradability" not in instruments_call
+    assert instruments_call["state"] == "active"
+
 
 def test_get_0dte_chain_returns_empty_when_no_chain_matches_today():
     broker = make_broker()
@@ -223,11 +230,11 @@ def test_get_0dte_chain_paginates_instruments():
     def instruments_page(args):
         if "cursor" not in args:
             return {"data": {"instruments": [
-                {"id": "instr-1", "chain_symbol": "IWM", "expiration_date": TODAY, "strike_price": "200.0", "type": "call"},
+                {"id": "instr-1", "chain_symbol": "IWM", "expiration_date": TODAY, "strike_price": "200.0", "type": "call", "tradability": "tradable"},
             ], "next": "https://api/x?cursor=page2"}}
         assert args["cursor"] == "page2"
         return {"data": {"instruments": [
-            {"id": "instr-2", "chain_symbol": "IWM", "expiration_date": TODAY, "strike_price": "201.0", "type": "call"},
+            {"id": "instr-2", "chain_symbol": "IWM", "expiration_date": TODAY, "strike_price": "201.0", "type": "call", "tradability": "tradable"},
         ], "next": ""}}
 
     call_tool = FakeCallTool({
@@ -246,6 +253,32 @@ def test_get_0dte_chain_paginates_instruments():
 
     assert {c.contract_id for c in contracts} == {"instr-1", "instr-2"}
     assert sum(1 for name, _ in call_tool.calls if name == "get_option_instruments") == 2
+
+
+def test_get_0dte_chain_returns_empty_and_logs_when_none_tradable(caplog):
+    # Real-world case that looked identical to "no data" until this
+    # distinction was added: Robinhood returns real 0DTE instruments, but
+    # every one has tradability="position_closing_only" -- an account-level
+    # restriction (PDT, options approval level, Agentic Trading
+    # permissions), not a data/parsing bug. Confirms get_0dte_chain()
+    # surfaces that difference instead of silently looking like empty data.
+    broker = make_broker()
+    broker._call_tool_sync = FakeCallTool({
+        "get_option_chains": {"data": {"chains": [
+            {"id": "chain-1", "expiration_dates": [TODAY], "can_open_position": True},
+        ]}},
+        "get_option_instruments": {"data": {"instruments": [
+            {"id": "instr-call", "chain_symbol": "IWM", "expiration_date": TODAY, "strike_price": "200.0000", "type": "call", "tradability": "position_closing_only"},
+            {"id": "instr-put", "chain_symbol": "IWM", "expiration_date": TODAY, "strike_price": "200.0000", "type": "put", "tradability": "position_closing_only"},
+        ], "next": ""}},
+    })
+
+    with caplog.at_level("WARNING"):
+        contracts = broker.get_0dte_chain("IWM")
+
+    assert contracts == []
+    assert any("position_closing_only" in r.message for r in caplog.records)
+    assert any("account-level restriction" in r.message for r in caplog.records)
 
 
 def test_get_option_quote_uses_cache_when_available():

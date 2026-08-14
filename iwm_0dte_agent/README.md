@@ -494,6 +494,23 @@ place to see them. If a signal keeps re-firing without trading, grep these
 two events out of `trade_log.csv` to see exactly what ATM ask / offset /
 cost it was missing by.
 
+**If `skipped_no_contract` fires on every single signal, for every symbol,
+every day**, check `agent.log` for a `WARNING` from `mcp_broker` naming a
+`tradability` status other than `tradable` (e.g. `position_closing_only`).
+That means Robinhood found real 0DTE instruments but your account can't
+currently open new positions in them -- almost always an account-level
+restriction (Pattern Day Trader status, options approval level, or an
+Agentic Trading permission), not a bug. Check your Robinhood account, or
+use `mcp_probe.py` to confirm directly:
+```powershell
+Set-Content -Path args.json -Value '{"underlying_symbol": "IWM"}'
+python -m iwm_0dte_agent.mcp_probe call get_option_chains @args.json
+# then, using the chain id from that response:
+Set-Content -Path args2.json -Value '{"chain_id": "<id>", "expiration_dates": "<today YYYY-MM-DD>", "state": "active"}'
+python -m iwm_0dte_agent.mcp_probe call get_option_instruments @args2.json
+```
+Look at the `tradability` field on the returned instruments.
+
 ## Backtesting
 
 `backtest.py` replays one ticker at a time (`--symbol`, defaults to the
