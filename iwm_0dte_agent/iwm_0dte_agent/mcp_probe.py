@@ -5,7 +5,8 @@ MCPBroker properly, instead of guessing.
 Usage:
     python -m iwm_0dte_agent.mcp_probe describe <tool_name> [<tool_name> ...] [--out FILE]
     python -m iwm_0dte_agent.mcp_probe call <tool_name> ['<json arguments>']
-    python -m iwm_0dte_agent.mcp_probe call <tool_name> -   (reads JSON arguments from stdin)
+    python -m iwm_0dte_agent.mcp_probe call <tool_name> -           (reads JSON arguments from stdin)
+    python -m iwm_0dte_agent.mcp_probe call <tool_name> @args.json  (reads JSON arguments from a file)
 
 `describe` only reads each tool's declared JSON schema from the server's own
 list_tools() response -- it never actually invokes the tool, so it's always
@@ -29,10 +30,13 @@ Examples:
 
 Windows/PowerShell note: quoting a JSON object containing double quotes
 directly on the command line is notoriously unreliable in PowerShell (it
-can silently strip the quotes, or split on spaces inside the JSON even
-with `--%`). Pass `-` as the arguments and pipe the JSON in instead -- this
-sidesteps PowerShell's native-executable argument quoting entirely:
-    '{"underlying_symbol": "IWM"}' | python -m iwm_0dte_agent.mcp_probe call get_option_chains -
+can silently strip the quotes, split on spaces inside the JSON even with
+`--%`, or -- piping to a native .exe's stdin -- come through empty
+depending on your PowerShell version/setup). The most reliable option
+there is a small JSON file, since it involves no shell quoting or piping
+mechanics at all:
+    Set-Content -Path args.json -Value '{"underlying_symbol": "IWM"}'
+    python -m iwm_0dte_agent.mcp_probe call get_option_chains @args.json
 """
 
 from __future__ import annotations
@@ -93,10 +97,17 @@ def describe(tool_names: list[str], out_path: str | None = None) -> None:
 
 
 def _read_arguments(raw: str) -> str:
-    """Resolve the raw `arguments` CLI value -- "-" means read JSON from
-    stdin instead of the literal string, for the Windows/PowerShell
-    quoting workaround described in the module docstring."""
-    return sys.stdin.read() if raw == "-" else raw
+    """Resolve the raw `arguments` CLI value: "-" reads JSON from stdin,
+    "@path" reads it from a file at that path, anything else is used as
+    the literal JSON string -- see the module docstring's Windows/
+    PowerShell note for why the file form is the most reliable of the
+    three there."""
+    if raw == "-":
+        return sys.stdin.read()
+    if raw.startswith("@"):
+        with open(raw[1:], encoding="utf-8") as f:
+            return f.read()
+    return raw
 
 
 def call(tool_name: str, arguments: dict) -> None:
@@ -138,9 +149,9 @@ def main() -> None:
     call_parser.add_argument("tool_name")
     call_parser.add_argument(
         "arguments", nargs="?", default="{}",
-        help='JSON object, e.g. \'{"underlying_symbol": "IWM"}\'. Pass "-" to read the '
-             'JSON from stdin instead (recommended on Windows/PowerShell -- see the '
-             "module docstring's Windows note for why quoting JSON directly is unreliable there).",
+        help='JSON object, e.g. \'{"underlying_symbol": "IWM"}\'. Pass "-" to read it from '
+             'stdin, or "@path/to/file.json" to read it from a file (recommended on '
+             "Windows/PowerShell -- see the module docstring's Windows note).",
     )
 
     args = parser.parse_args()

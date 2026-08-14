@@ -358,6 +358,15 @@ python -m iwm_0dte_agent.mcp_probe describe get_option_chains get_option_instrum
 python -m iwm_0dte_agent.mcp_probe call get_option_chains '{"underlying_symbol": "IWM"}'
 ```
 
+**On Windows/PowerShell**, quoting a JSON object with embedded double quotes
+directly on the command line is unreliable (PowerShell can strip the quotes,
+split on spaces inside the JSON even with `--%`, or drop piped stdin
+depending on your setup) -- a small file sidesteps all of that:
+```powershell
+Set-Content -Path args.json -Value '{"underlying_symbol": "IWM"}'
+python -m iwm_0dte_agent.mcp_probe call get_option_chains @args.json
+```
+
 If `--list-mcp-tools`, `mcp_probe.py`, or `--live` fails during the MCP step:
 
 - The OAuth flow opens `http://127.0.0.1:8765/callback` (configurable via
