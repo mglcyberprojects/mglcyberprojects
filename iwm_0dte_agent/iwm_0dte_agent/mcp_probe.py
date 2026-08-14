@@ -5,6 +5,7 @@ MCPBroker properly, instead of guessing.
 Usage:
     python -m iwm_0dte_agent.mcp_probe describe <tool_name> [<tool_name> ...] [--out FILE]
     python -m iwm_0dte_agent.mcp_probe call <tool_name> ['<json arguments>']
+    python -m iwm_0dte_agent.mcp_probe call <tool_name> -   (reads JSON arguments from stdin)
 
 `describe` only reads each tool's declared JSON schema from the server's own
 list_tools() response -- it never actually invokes the tool, so it's always
@@ -25,6 +26,13 @@ Examples:
     python -m iwm_0dte_agent.mcp_probe describe get_option_chains
     python -m iwm_0dte_agent.mcp_probe describe get_option_instruments get_option_quotes place_option_order review_option_order --out option_schemas.txt
     python -m iwm_0dte_agent.mcp_probe call get_option_chains '{"underlying_symbol": "IWM"}'
+
+Windows/PowerShell note: quoting a JSON object containing double quotes
+directly on the command line is notoriously unreliable in PowerShell (it
+can silently strip the quotes, or split on spaces inside the JSON even
+with `--%`). Pass `-` as the arguments and pipe the JSON in instead -- this
+sidesteps PowerShell's native-executable argument quoting entirely:
+    '{"underlying_symbol": "IWM"}' | python -m iwm_0dte_agent.mcp_probe call get_option_chains -
 """
 
 from __future__ import annotations
@@ -84,6 +92,13 @@ def describe(tool_names: list[str], out_path: str | None = None) -> None:
         broker.close()
 
 
+def _read_arguments(raw: str) -> str:
+    """Resolve the raw `arguments` CLI value -- "-" means read JSON from
+    stdin instead of the literal string, for the Windows/PowerShell
+    quoting workaround described in the module docstring."""
+    return sys.stdin.read() if raw == "-" else raw
+
+
 def call(tool_name: str, arguments: dict) -> None:
     if tool_name in _MUTATING_TOOLS:
         print(
@@ -121,7 +136,12 @@ def main() -> None:
 
     call_parser = sub.add_parser("call", help="Actually invoke a tool and print the raw response")
     call_parser.add_argument("tool_name")
-    call_parser.add_argument("arguments", nargs="?", default="{}", help='JSON object, e.g. \'{"underlying_symbol": "IWM"}\'')
+    call_parser.add_argument(
+        "arguments", nargs="?", default="{}",
+        help='JSON object, e.g. \'{"underlying_symbol": "IWM"}\'. Pass "-" to read the '
+             'JSON from stdin instead (recommended on Windows/PowerShell -- see the '
+             "module docstring's Windows note for why quoting JSON directly is unreliable there).",
+    )
 
     args = parser.parse_args()
 
@@ -129,8 +149,9 @@ def main() -> None:
         describe(args.tool_name, out_path=args.out)
         return
 
+    raw_arguments = _read_arguments(args.arguments)
     try:
-        arguments = json.loads(args.arguments)
+        arguments = json.loads(raw_arguments)
     except json.JSONDecodeError as exc:
         print(f"Could not parse arguments as JSON: {exc}", file=sys.stderr)
         sys.exit(1)
